@@ -1,0 +1,17 @@
+{
+  "name": "postgres-proxy",
+  "version": "1.0.0",
+  "description": "Tiny Postgres proxy with hourly signed tokens",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "pg": "^8.20.0"
+  }
+}

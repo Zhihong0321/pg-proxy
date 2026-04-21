@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Postgres Proxy API Docs</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell docs">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">API Docs</p>
+          <h1>Compact, AI-readable reference.</h1>
+          <p class="lede">
+            Every endpoint is shown with purpose, request shape, response shape, and
+            one simple example.
+          </p>
+        </div>
+        <nav class="hero-actions">
+          <a class="button ghost" href="/">Open Control UI</a>
+        </nav>
+      </header>
+
+      <section class="doc-card">
+        <h2>Base URL</h2>
+        <pre><code>http://localhost:3000</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>Flow</h2>
+        <pre><code>1. POST /api/token with x-admin-secret
+2. Receive token scoped to db_name + access
+3. POST /api/sql with Authorization: Bearer &lt;token&gt;
+4. Review /api/logs for recent access records</code></pre>
+      </section>
+
+      <section class="doc-grid">
+        <article class="doc-card">
+          <h2>GET /api/health</h2>
+          <p>Returns service status and configured database names.</p>
+          <pre><code>{
+  "ok": true,
+  "databases": ["main", "analytics"]
+}</code></pre>
+        </article>
+
+        <article class="doc-card">
+          <h2>GET /api/databases</h2>
+          <p>Returns the list of available <code>db_name</code> values.</p>
+          <pre><code>{
+  "databases": ["main", "analytics"]
+}</code></pre>
+        </article>
+      </section>
+
+      <section class="doc-card">
+        <h2>POST /api/token</h2>
+        <p>Creates a short-lived token for exactly one database and one access mode.</p>
+        <pre><code>Headers:
+  x-admin-secret: YOUR_ADMIN_SECRET
+
+Body:
+{
+  "db_name": "main",
+  "access": "read_only",
+  "ttl_seconds": 3600
+}</code></pre>
+        <pre><code>Success:
+{
+  "db_name": "main",
+  "access": "read_only",
+  "token": "&lt;jwt-like-string&gt;",
+  "expiresInSeconds": 3600
+}</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>POST /api/sql</h2>
+        <p>Runs SQL against the database named in <code>db_name</code>. The token must match the same <code>db_name</code>.</p>
+        <pre><code>Headers:
+  Authorization: Bearer TOKEN
+
+Body:
+{
+  "db_name": "main",
+  "sql": "select now() as now",
+  "params": []
+}</code></pre>
+        <pre><code>Success:
+{
+  "db_name": "main",
+  "access": "read_only",
+  "command": "SELECT",
+  "rowCount": 1,
+  "rows": [
+    { "now": "2026-04-21T00:00:00.000Z" }
+  ]
+}</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>GET /api/logs?limit=50</h2>
+        <p>Returns recent log entries from <code>logs/access.log</code>.</p>
+        <pre><code>{
+  "logs": [
+    {
+      "time": "2026-04-21T10:00:00.000Z",
+      "type": "token_issued",
+      "db_name": "main",
+      "access": "read_only"
+    }
+  ]
+}</code></pre>
+      </section>
+
+      <section class="doc-grid">
+        <article class="doc-card">
+          <h2>Rules</h2>
+          <pre><code>- token is bound to one db_name
+- access is either read_only or full
+- read_only accepts only SQL starting with SELECT
+- full allows any SQL
+- max token lifetime is 3600 seconds</code></pre>
+        </article>
+
+        <article class="doc-card">
+          <h2>Config</h2>
+          <pre><code>PORT=3000
+PROXY_ADMIN_SECRET=change-this-admin-secret
+PROXY_SIGNING_SECRET=change-this-signing-secret
+POSTGRES_DATABASES={"main":"postgres://...","analytics":"postgres://..."}</code></pre>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

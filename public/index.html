@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Postgres Proxy Control</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Postgres Proxy</p>
+          <h1>Manage databases, tokens, SQL, and logs in one place.</h1>
+          <p class="lede">
+            This UI is intentionally plain: pick a database, mint a token, run SQL,
+            and inspect recent access logs.
+          </p>
+        </div>
+        <nav class="hero-actions">
+          <a class="button ghost" href="/docs">Open API Docs</a>
+          <button class="button" id="refreshAllButton" type="button">Refresh</button>
+        </nav>
+      </header>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="card-head">
+            <h2>System</h2>
+            <span class="badge" id="healthBadge">Checking</span>
+          </div>
+          <div class="meta-list">
+            <div>
+              <span>Health</span>
+              <strong id="healthValue">...</strong>
+            </div>
+            <div>
+              <span>Databases</span>
+              <strong id="databaseCount">0</strong>
+            </div>
+            <div>
+              <span>Log File</span>
+              <strong>logs/access.log</strong>
+            </div>
+          </div>
+          <div id="databasePills" class="pill-row"></div>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Create Token</h2>
+            <span class="badge subtle">Admin Secret Required</span>
+          </div>
+          <form id="tokenForm" class="stack">
+            <label>
+              <span>Admin secret</span>
+              <input id="adminSecret" name="adminSecret" type="password" placeholder="x-admin-secret" required />
+            </label>
+            <label>
+              <span>Database</span>
+              <select id="tokenDbName" name="db_name"></select>
+            </label>
+            <label>
+              <span>Access</span>
+              <select name="access">
+                <option value="read_only">read_only</option>
+                <option value="full">full</option>
+              </select>
+            </label>
+            <label>
+              <span>TTL seconds</span>
+              <input name="ttl_seconds" type="number" min="1" max="3600" value="3600" />
+            </label>
+            <button class="button" type="submit">Generate Token</button>
+          </form>
+          <label class="stack">
+            <span>Latest token</span>
+            <textarea id="tokenOutput" rows="6" readonly></textarea>
+          </label>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="card-head">
+            <h2>Run SQL</h2>
+            <span class="badge subtle">Uses Bearer Token</span>
+          </div>
+          <form id="sqlForm" class="stack">
+            <label>
+              <span>Token</span>
+              <textarea id="sqlToken" name="token" rows="4" placeholder="Paste token here" required></textarea>
+            </label>
+            <label>
+              <span>Database</span>
+              <select id="sqlDbName" name="db_name"></select>
+            </label>
+            <label>
+              <span>SQL</span>
+              <textarea name="sql" rows="8" placeholder="select now() as now" required></textarea>
+            </label>
+            <label>
+              <span>Params JSON array</span>
+              <textarea name="params" rows="4">[]</textarea>
+            </label>
+            <button class="button" type="submit">Run SQL</button>
+          </form>
+          <label class="stack">
+            <span>Result</span>
+            <textarea id="sqlResult" rows="12" readonly></textarea>
+          </label>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Recent Logs</h2>
+            <div class="inline-actions">
+              <label class="inline-field">
+                <span>Limit</span>
+                <input id="logLimit" type="number" min="1" max="500" value="50" />
+              </label>
+              <button class="button ghost" id="refreshLogsButton" type="button">Refresh Logs</button>
+            </div>
+          </div>
+          <textarea id="logsOutput" rows="24" readonly></textarea>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
