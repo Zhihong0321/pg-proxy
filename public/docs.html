@@ -11,10 +11,10 @@
       <header class="hero">
         <div>
           <p class="eyebrow">API Docs</p>
-          <h1>Compact, AI-readable reference.</h1>
+          <h1>Internal DB stores target DBs. Tokens use saved `db_name` values.</h1>
           <p class="lede">
-            Every endpoint is shown with purpose, request shape, response shape, and
-            one simple example.
+            `DATABASE_URL` is the proxy app's own database. AI target databases are
+            added through the admin API or the web UI.
           </p>
         </div>
         <nav class="hero-actions">
@@ -29,25 +29,26 @@
 
       <section class="doc-card">
         <h2>Flow</h2>
-        <pre><code>1. POST /api/token with x-admin-secret
-2. Receive token scoped to db_name + access
-3. POST /api/sql with Authorization: Bearer &lt;token&gt;
-4. Review /api/logs for recent access records</code></pre>
+        <pre><code>1. Set DATABASE_URL for the proxy app itself
+2. POST /api/managed-databases with x-admin-secret
+3. POST /api/token for one saved db_name
+4. POST /api/sql with Authorization: Bearer &lt;token&gt;
+5. Review /api/logs for access records</code></pre>
       </section>
 
       <section class="doc-grid">
         <article class="doc-card">
           <h2>GET /api/health</h2>
-          <p>Returns service status and configured database names.</p>
+          <p>Returns service health and number of saved target databases.</p>
           <pre><code>{
   "ok": true,
-  "databases": ["main", "analytics"]
+  "database_count": 2
 }</code></pre>
         </article>
 
         <article class="doc-card">
           <h2>GET /api/databases</h2>
-          <p>Returns the list of available <code>db_name</code> values.</p>
+          <p>Returns the list of saved <code>db_name</code> values.</p>
           <pre><code>{
   "databases": ["main", "analytics"]
 }</code></pre>
@@ -55,8 +56,57 @@
       </section>
 
       <section class="doc-card">
+        <h2>GET /api/managed-databases</h2>
+        <p>Admin-only. Returns saved target databases including connection strings.</p>
+        <pre><code>Headers:
+  x-admin-secret: YOUR_ADMIN_SECRET
+
+Success:
+{
+  "databases": [
+    {
+      "db_name": "main",
+      "connection_string": "postgres://user:password@host:5432/db",
+      "created_at": "2026-04-21T01:00:00.000Z",
+      "updated_at": "2026-04-21T01:05:00.000Z"
+    }
+  ]
+}</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>POST /api/managed-databases</h2>
+        <p>Admin-only. Creates or updates a target database that the AI can later use.</p>
+        <pre><code>Headers:
+  x-admin-secret: YOUR_ADMIN_SECRET
+
+Body:
+{
+  "db_name": "main",
+  "connection_string": "postgres://user:password@host:5432/db"
+}</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>POST /api/managed-databases/test</h2>
+        <p>Admin-only. Tests a candidate connection string before saving it.</p>
+        <pre><code>Headers:
+  x-admin-secret: YOUR_ADMIN_SECRET
+
+Body:
+{
+  "connection_string": "postgres://user:password@host:5432/db"
+}</code></pre>
+      </section>
+
+      <section class="doc-card">
+        <h2>DELETE /api/managed-databases/:db_name</h2>
+        <p>Admin-only. Removes a saved target database.</p>
+      </section>
+
+      <section class="doc-card">
         <h2>POST /api/token</h2>
-        <p>Creates a short-lived token for exactly one database and one access mode.</p>
+        <p>Admin-only. Creates a short-lived token for one saved <code>db_name</code>.</p>
         <pre><code>Headers:
   x-admin-secret: YOUR_ADMIN_SECRET
 
@@ -77,7 +127,7 @@ Body:
 
       <section class="doc-card">
         <h2>POST /api/sql</h2>
-        <p>Runs SQL against the database named in <code>db_name</code>. The token must match the same <code>db_name</code>.</p>
+        <p>Runs SQL against the saved target database named in <code>db_name</code>.</p>
         <pre><code>Headers:
   Authorization: Bearer TOKEN
 
@@ -87,49 +137,29 @@ Body:
   "sql": "select now() as now",
   "params": []
 }</code></pre>
-        <pre><code>Success:
-{
-  "db_name": "main",
-  "access": "read_only",
-  "command": "SELECT",
-  "rowCount": 1,
-  "rows": [
-    { "now": "2026-04-21T00:00:00.000Z" }
-  ]
-}</code></pre>
       </section>
 
       <section class="doc-card">
         <h2>GET /api/logs?limit=50</h2>
         <p>Returns recent log entries from <code>logs/access.log</code>.</p>
-        <pre><code>{
-  "logs": [
-    {
-      "time": "2026-04-21T10:00:00.000Z",
-      "type": "token_issued",
-      "db_name": "main",
-      "access": "read_only"
-    }
-  ]
-}</code></pre>
       </section>
 
       <section class="doc-grid">
         <article class="doc-card">
-          <h2>Rules</h2>
-          <pre><code>- token is bound to one db_name
-- access is either read_only or full
-- read_only accepts only SQL starting with SELECT
-- full allows any SQL
-- max token lifetime is 3600 seconds</code></pre>
+          <h2>Required Env</h2>
+          <pre><code>DATABASE_URL=postgres://proxy-app-db
+PROXY_ADMIN_SECRET=change-this-admin-secret
+PROXY_SIGNING_SECRET=change-this-signing-secret</code></pre>
         </article>
 
         <article class="doc-card">
-          <h2>Config</h2>
-          <pre><code>PORT=3000
-PROXY_ADMIN_SECRET=change-this-admin-secret
-PROXY_SIGNING_SECRET=change-this-signing-secret
-POSTGRES_DATABASES={"main":"postgres://...","analytics":"postgres://..."}</code></pre>
+          <h2>Rules</h2>
+          <pre><code>- DATABASE_URL is the proxy app's own database
+- target databases are stored in managed_databases
+- token is bound to one db_name
+- access is read_only or full
+- read_only accepts only SQL starting with SELECT
+- max token lifetime is 3600 seconds</code></pre>
         </article>
       </section>
     </main>

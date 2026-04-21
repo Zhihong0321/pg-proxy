@@ -11,10 +11,10 @@
       <header class="hero">
         <div>
           <p class="eyebrow">Postgres Proxy</p>
-          <h1>Manage databases, tokens, SQL, and logs in one place.</h1>
+          <h1>Store AI target databases here, then issue tokens against them.</h1>
           <p class="lede">
-            This UI is intentionally plain: pick a database, mint a token, run SQL,
-            and inspect recent access logs.
+            `DATABASE_URL` is the proxy app's own database. The AI-facing Postgres
+            connections below are managed from this UI.
           </p>
         </div>
         <nav class="hero-actions">
@@ -35,27 +35,72 @@
               <strong id="healthValue">...</strong>
             </div>
             <div>
-              <span>Databases</span>
+              <span>Managed DBs</span>
               <strong id="databaseCount">0</strong>
+            </div>
+            <div>
+              <span>Config DB</span>
+              <strong>DATABASE_URL</strong>
             </div>
             <div>
               <span>Log File</span>
               <strong>logs/access.log</strong>
             </div>
           </div>
+          <label class="stack compact">
+            <span>Admin secret</span>
+            <input id="adminSecret" type="password" placeholder="x-admin-secret" />
+          </label>
           <div id="databasePills" class="pill-row"></div>
         </article>
 
+        <article class="card">
+          <div class="card-head">
+            <h2>Manage Target Database</h2>
+            <span class="badge subtle">Saved in DATABASE_URL DB</span>
+          </div>
+          <form id="databaseForm" class="stack">
+            <label>
+              <span>db_name</span>
+              <input name="db_name" type="text" placeholder="main" required />
+            </label>
+            <label>
+              <span>connection_string</span>
+              <textarea
+                name="connection_string"
+                rows="5"
+                placeholder="postgres://user:password@host:5432/db"
+                required
+              ></textarea>
+            </label>
+            <div class="button-row">
+              <button class="button" type="submit">Save Database</button>
+              <button class="button ghost" id="testDatabaseButton" type="button">Test Connection</button>
+              <button class="button ghost" id="clearDatabaseButton" type="button">Clear Form</button>
+            </div>
+          </form>
+          <label class="stack">
+            <span>Database action result</span>
+            <textarea id="databaseResult" rows="7" readonly></textarea>
+          </label>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Saved Target Databases</h2>
+          <button class="button ghost" id="refreshDatabasesButton" type="button">Refresh List</button>
+        </div>
+        <div id="databaseTable" class="database-table empty">No saved databases yet.</div>
+      </section>
+
+      <section class="grid two">
         <article class="card">
           <div class="card-head">
             <h2>Create Token</h2>
             <span class="badge subtle">Admin Secret Required</span>
           </div>
           <form id="tokenForm" class="stack">
-            <label>
-              <span>Admin secret</span>
-              <input id="adminSecret" name="adminSecret" type="password" placeholder="x-admin-secret" required />
-            </label>
             <label>
               <span>Database</span>
               <select id="tokenDbName" name="db_name"></select>
@@ -78,9 +123,7 @@
             <textarea id="tokenOutput" rows="6" readonly></textarea>
           </label>
         </article>
-      </section>
 
-      <section class="grid two">
         <article class="card">
           <div class="card-head">
             <h2>Run SQL</h2>
@@ -110,20 +153,20 @@
             <textarea id="sqlResult" rows="12" readonly></textarea>
           </label>
         </article>
+      </section>
 
-        <article class="card">
-          <div class="card-head">
-            <h2>Recent Logs</h2>
-            <div class="inline-actions">
-              <label class="inline-field">
-                <span>Limit</span>
-                <input id="logLimit" type="number" min="1" max="500" value="50" />
-              </label>
-              <button class="button ghost" id="refreshLogsButton" type="button">Refresh Logs</button>
-            </div>
+      <section class="card">
+        <div class="card-head">
+          <h2>Recent Logs</h2>
+          <div class="inline-actions">
+            <label class="inline-field">
+              <span>Limit</span>
+              <input id="logLimit" type="number" min="1" max="500" value="50" />
+            </label>
+            <button class="button ghost" id="refreshLogsButton" type="button">Refresh Logs</button>
           </div>
-          <textarea id="logsOutput" rows="24" readonly></textarea>
-        </article>
+        </div>
+        <textarea id="logsOutput" rows="24" readonly></textarea>
       </section>
     </main>
 

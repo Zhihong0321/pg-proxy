@@ -1,6 +1,6 @@
 # postgres-proxy
 
-Tiny Postgres proxy that keeps your real Postgres passwords inside the proxy and gives clients a short-lived token, a local control UI, and an API docs page.
+Tiny Postgres proxy that uses one internal Postgres database for app state, and lets you manage AI target databases from the web UI.
 
 ## 1. Configure
 
@@ -8,15 +8,9 @@ Copy `.env.example` into `.env` and fill in the real values:
 
 ```env
 PORT=3000
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres_proxy
 PROXY_ADMIN_SECRET=change-this-admin-secret
 PROXY_SIGNING_SECRET=change-this-signing-secret
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
-```
-
-Or for multiple databases:
-
-```env
-POSTGRES_DATABASES={"main":"postgres://postgres:postgres@localhost:5432/postgres","analytics":"postgres://postgres:postgres@localhost:5432/analytics"}
 ```
 
 ## 2. Start
@@ -39,9 +33,9 @@ This repo is deployable on Railway with the current setup.
 Required Railway variables:
 
 ```env
+DATABASE_URL=postgres://user:password@host:5432/proxy_app_db
 PROXY_ADMIN_SECRET=change-this-admin-secret
 PROXY_SIGNING_SECRET=change-this-signing-secret
-DATABASE_URL=postgres://user:password@host:5432/db
 ```
 
 Notes:
@@ -49,14 +43,17 @@ Notes:
 - Railway injects `PORT`, and this app already listens on it.
 - `railway.toml` sets the start command to `npm start`.
 - `railway.toml` sets the healthcheck path to `/health`.
-- Easiest first deploy is one database only with `DATABASE_URL`.
-- For multiple databases, you can still use `POSTGRES_DATABASES`.
-- `POSTGRES_DATABASES` now accepts:
-  - JSON object
-  - one plain `postgres://...` URL
-  - `main=postgres://...,analytics=postgres://...`
+- `DATABASE_URL` is the proxy app's own database, not the AI target database.
+- Add AI target databases later from the front UI.
 
-## 3. Mint a token
+## 3. Add target databases in UI
+
+Open `http://localhost:3000/`, enter your admin secret, then save one or more target databases with:
+
+- `db_name`
+- `connection_string`
+
+## 4. Mint a token
 
 ```powershell
 $headers = @{ "x-admin-secret" = "change-this-admin-secret" }
@@ -70,11 +67,11 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:3000/token" -Headers $head
 
 Token request fields:
 
-- `db_name`: which configured Postgres to use
+- `db_name`: which saved target database to use
 - `access`: `read_only` or `full`
 - `ttl_seconds`: token lifetime, max 3600
 
-## 4. Use the token for SQL
+## 5. Use the token for SQL
 
 ```powershell
 $token = "PUT_TOKEN_HERE"
@@ -90,11 +87,11 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:3000/sql" -Headers $header
 
 SQL request fields:
 
-- `db_name`: which configured database to connect to
+- `db_name`: which saved target database to connect to
 - `sql`: the SQL text
 - `params`: optional query parameters array
 
-## 5. Logs
+## 6. Logs
 
 Every token issue, SQL success, SQL denial, and request error is appended to:
 
@@ -106,7 +103,8 @@ Recent logs are also available from:
 
 ## Notes
 
-- The real Postgres passwords stay only inside the proxy through `POSTGRES_DATABASES`.
+- `DATABASE_URL` is the proxy app database.
+- AI target databases are stored in the `managed_databases` table.
 - Tokens are bound to one `db_name`.
 - `read_only` tokens only allow SQL starting with `SELECT`.
 - `full` tokens allow any SQL.

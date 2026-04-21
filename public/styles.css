@@ -111,6 +111,10 @@ body {
   gap: 12px;
 }
 
+.stack.compact {
+  margin-top: 16px;
+}
+
 label span {
   display: block;
   margin-bottom: 6px;
@@ -169,6 +173,11 @@ textarea {
   color: var(--text);
 }
 
+.button.small {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+}
+
 .badge,
 .pill {
   display: inline-flex;
@@ -211,6 +220,10 @@ textarea {
   background: rgba(35, 24, 21, 0.06);
 }
 
+.pill.empty {
+  color: var(--muted);
+}
+
 .meta-list {
   display: grid;
   gap: 10px;
@@ -241,6 +254,52 @@ textarea {
 
 .inline-field input {
   width: 88px;
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.database-table {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.database-table.empty {
+  color: var(--muted);
+}
+
+.database-row {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.database-main {
+  display: grid;
+  gap: 8px;
+}
+
+.database-main code {
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.database-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
 .docs {
@@ -277,7 +336,8 @@ pre {
   }
 
   .hero,
-  .card-head {
+  .card-head,
+  .database-meta {
     flex-direction: column;
     align-items: stretch;
   }

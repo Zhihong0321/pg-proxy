@@ -8,11 +8,16 @@ const { URL } = require("url");
 const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3000);
+const DATABASE_URL = process.env.DATABASE_URL;
 const PROXY_ADMIN_SECRET = process.env.PROXY_ADMIN_SECRET;
 const PROXY_SIGNING_SECRET = process.env.PROXY_SIGNING_SECRET;
-const DATABASES_JSON = process.env.POSTGRES_DATABASES;
-const DATABASE_URL = process.env.DATABASE_URL;
 const PUBLIC_DIR = path.join(__dirname, "public");
+const LOGS_DIR = path.join(__dirname, "logs");
+const ACCESS_LOG_PATH = path.join(LOGS_DIR, "access.log");
+
+if (!DATABASE_URL) {
+  throw new Error("Missing DATABASE_URL");
+}
 
 if (!PROXY_ADMIN_SECRET) {
   throw new Error("Missing PROXY_ADMIN_SECRET");
@@ -22,134 +27,16 @@ if (!PROXY_SIGNING_SECRET) {
   throw new Error("Missing PROXY_SIGNING_SECRET");
 }
 
-const databases = parseDatabases(DATABASES_JSON || DATABASE_URL);
-const pools = new Map(
-  Object.entries(databases).map(([dbName, connectionString]) => [
-    dbName,
-    new Pool({ connectionString }),
-  ])
-);
+fs.mkdirSync(LOGS_DIR, { recursive: true });
 
-const logsDir = path.join(__dirname, "logs");
-const accessLogPath = path.join(logsDir, "access.log");
+const appPool = new Pool({
+  connectionString: DATABASE_URL,
+});
 
-fs.mkdirSync(logsDir, { recursive: true });
-
-function parseDatabases(value) {
-  const normalizedValue = normalizeDatabaseConfigValue(value);
-
-  if (!normalizedValue) {
-    throw new Error("Missing POSTGRES_DATABASES or DATABASE_URL");
-  }
-
-  if (looksLikeConnectionString(normalizedValue)) {
-    return { main: normalizedValue };
-  }
-
-  const keyValuePairs = parseKeyValueDatabaseList(normalizedValue);
-  if (keyValuePairs) {
-    return keyValuePairs;
-  }
-
-  let parsed;
-
-  try {
-    parsed = JSON.parse(normalizedValue);
-  } catch (error) {
-    throw new Error(
-      "POSTGRES_DATABASES must be valid JSON, a single postgres:// URL, or db_name=postgres://..."
-    );
-  }
-
-  if (typeof parsed === "string" && looksLikeConnectionString(parsed)) {
-    return { main: parsed };
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("POSTGRES_DATABASES must be an object");
-  }
-
-  const entries = Object.entries(parsed);
-
-  if (entries.length === 0) {
-    throw new Error("POSTGRES_DATABASES must include at least one database");
-  }
-
-  for (const [dbName, connectionString] of entries) {
-    if (!dbName.trim()) {
-      throw new Error("Database names must not be empty");
-    }
-
-    if (typeof connectionString !== "string" || !connectionString.trim()) {
-      throw new Error(`Database "${dbName}" must have a connection string`);
-    }
-  }
-
-  return parsed;
-}
-
-function normalizeDatabaseConfigValue(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  const trimmed = value.trim();
-
-  if (!trimmed) {
-    return "";
-  }
-
-  const hasWrappingSingleQuotes = trimmed.startsWith("'") && trimmed.endsWith("'");
-  const hasWrappingDoubleQuotes = trimmed.startsWith('"') && trimmed.endsWith('"');
-
-  if (hasWrappingSingleQuotes || hasWrappingDoubleQuotes) {
-    return trimmed.slice(1, -1).trim();
-  }
-
-  return trimmed;
-}
-
-function looksLikeConnectionString(value) {
-  return /^postgres(ql)?:\/\//i.test(value);
-}
-
-function parseKeyValueDatabaseList(value) {
-  if (!value.includes("=")) {
-    return null;
-  }
-
-  const parts = value
-    .split(/\r?\n|,(?=[^,=]+=)/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  if (parts.length === 0) {
-    return null;
-  }
-
-  const databases = {};
-
-  for (const part of parts) {
-    const separatorIndex = part.indexOf("=");
-    if (separatorIndex <= 0) {
-      return null;
-    }
-
-    const dbName = part.slice(0, separatorIndex).trim();
-    const connectionString = part.slice(separatorIndex + 1).trim();
-
-    if (!dbName || !looksLikeConnectionString(connectionString)) {
-      return null;
-    }
-
-    databases[dbName] = connectionString;
-  }
-
-  return Object.keys(databases).length > 0 ? databases : null;
-}
+const targetPools = new Map();
 
 function appendAccessLog(entry) {
-  fs.appendFileSync(accessLogPath, `${JSON.stringify(entry)}\n`, "utf8");
+  fs.appendFileSync(ACCESS_LOG_PATH, `${JSON.stringify(entry)}\n`, "utf8");
 }
 
 function base64UrlEncode(value) {
@@ -216,7 +103,7 @@ function createToken({ dbName, access, ttlSeconds = 3600 }) {
   return `${header}.${payload}.${signature}`;
 }
 
-function verifyToken(token) {
+async function verifyToken(token) {
   if (!token) {
     throw new Error("Missing token");
   }
@@ -240,12 +127,13 @@ function verifyToken(token) {
     throw new Error("Token expired");
   }
 
-  if (!decodedPayload.db_name || !databases[decodedPayload.db_name]) {
-    throw new Error("Token database is invalid");
-  }
-
   if (decodedPayload.access !== "read_only" && decodedPayload.access !== "full") {
     throw new Error("Token access is invalid");
+  }
+
+  const targetDatabase = await getManagedDatabase(decodedPayload.db_name);
+  if (!targetDatabase) {
+    throw new Error("Token database is invalid");
   }
 
   return decodedPayload;
@@ -256,6 +144,7 @@ function getBearerToken(request) {
   if (!header || !header.startsWith("Bearer ")) {
     return null;
   }
+
   return header.slice("Bearer ".length);
 }
 
@@ -302,16 +191,6 @@ function getClientIp(request) {
   return request.socket.remoteAddress || null;
 }
 
-function getPool(dbName) {
-  const pool = pools.get(dbName);
-
-  if (!pool) {
-    throw new Error("Unknown db_name");
-  }
-
-  return pool;
-}
-
 function normalizeAccess(value) {
   if (value === "read_only" || value === "full") {
     return value;
@@ -336,11 +215,11 @@ function logEvent(type, request, extra = {}) {
 }
 
 function getRecentLogs(limit) {
-  if (!fs.existsSync(accessLogPath)) {
+  if (!fs.existsSync(ACCESS_LOG_PATH)) {
     return [];
   }
 
-  const fileContent = fs.readFileSync(accessLogPath, "utf8").trim();
+  const fileContent = fs.readFileSync(ACCESS_LOG_PATH, "utf8").trim();
 
   if (!fileContent) {
     return [];
@@ -394,155 +273,384 @@ function serveStatic(response, pathname) {
   return true;
 }
 
-const server = http.createServer(async (request, response) => {
-  const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
-  const pathname = requestUrl.pathname;
+function requireAdminSecret(request) {
+  const adminSecret = request.headers["x-admin-secret"];
+  if (!adminSecret || !safeEqual(adminSecret, PROXY_ADMIN_SECRET)) {
+    throw new Error("Unauthorized");
+  }
+}
+
+function normalizeDbName(value) {
+  const dbName = typeof value === "string" ? value.trim() : "";
+
+  if (!dbName) {
+    throw new Error("Missing db_name");
+  }
+
+  if (!/^[a-zA-Z0-9_-]+$/.test(dbName)) {
+    throw new Error("db_name may only contain letters, numbers, dash, and underscore");
+  }
+
+  return dbName;
+}
+
+function normalizeConnectionString(value) {
+  const connectionString = typeof value === "string" ? value.trim() : "";
+
+  if (!connectionString) {
+    throw new Error("Missing connection_string");
+  }
+
+  if (!/^postgres(ql)?:\/\//i.test(connectionString)) {
+    throw new Error("connection_string must start with postgres:// or postgresql://");
+  }
+
+  return connectionString;
+}
+
+function mapDatabaseRow(row, includeConnectionString = false) {
+  const mapped = {
+    db_name: row.db_name,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+
+  if (includeConnectionString) {
+    mapped.connection_string = row.connection_string;
+  }
+
+  return mapped;
+}
+
+async function ensureSchema() {
+  await appPool.query(`
+    create table if not exists managed_databases (
+      db_name text primary key,
+      connection_string text not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+}
+
+async function listManagedDatabases() {
+  const result = await appPool.query(`
+    select db_name, connection_string, created_at, updated_at
+    from managed_databases
+    order by db_name asc
+  `);
+
+  return result.rows;
+}
+
+async function getManagedDatabase(dbName) {
+  const result = await appPool.query(
+    `
+      select db_name, connection_string, created_at, updated_at
+      from managed_databases
+      where db_name = $1
+    `,
+    [dbName]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function upsertManagedDatabase(dbName, connectionString) {
+  const result = await appPool.query(
+    `
+      insert into managed_databases (db_name, connection_string)
+      values ($1, $2)
+      on conflict (db_name)
+      do update set
+        connection_string = excluded.connection_string,
+        updated_at = now()
+      returning db_name, connection_string, created_at, updated_at
+    `,
+    [dbName, connectionString]
+  );
+
+  return result.rows[0];
+}
+
+async function deleteManagedDatabase(dbName) {
+  const result = await appPool.query(
+    `
+      delete from managed_databases
+      where db_name = $1
+      returning db_name
+    `,
+    [dbName]
+  );
+
+  return result.rowCount > 0;
+}
+
+async function getTargetPool(dbName) {
+  const managedDatabase = await getManagedDatabase(dbName);
+
+  if (!managedDatabase) {
+    throw new Error("Unknown db_name");
+  }
+
+  const cached = targetPools.get(dbName);
+
+  if (cached && cached.connectionString === managedDatabase.connection_string) {
+    return cached.pool;
+  }
+
+  if (cached) {
+    await cached.pool.end().catch(() => {});
+  }
+
+  const pool = new Pool({
+    connectionString: managedDatabase.connection_string,
+  });
+
+  targetPools.set(dbName, {
+    connectionString: managedDatabase.connection_string,
+    pool,
+  });
+
+  return pool;
+}
+
+async function closeTargetPool(dbName) {
+  const cached = targetPools.get(dbName);
+  if (!cached) {
+    return;
+  }
+
+  targetPools.delete(dbName);
+  await cached.pool.end().catch(() => {});
+}
+
+async function testConnectionString(connectionString) {
+  const pool = new Pool({
+    connectionString,
+  });
 
   try {
-    if (request.method === "GET" && pathname === "/health") {
-      json(response, 200, { ok: true, databases: Object.keys(databases) });
-      return;
+    const result = await pool.query("select current_database() as current_database");
+    return result.rows[0];
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+async function handleApiRequest(request, response, pathname, requestUrl) {
+  if (request.method === "GET" && pathname === "/api/health") {
+    const databases = await listManagedDatabases();
+    json(response, 200, {
+      ok: true,
+      database_count: databases.length,
+    });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/databases") {
+    const databases = await listManagedDatabases();
+    json(response, 200, {
+      databases: databases.map((row) => row.db_name),
+    });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/managed-databases") {
+    requireAdminSecret(request);
+    const databases = await listManagedDatabases();
+    json(response, 200, {
+      databases: databases.map((row) => mapDatabaseRow(row, true)),
+    });
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/managed-databases") {
+    requireAdminSecret(request);
+    const body = await readJson(request);
+    const dbName = normalizeDbName(body.db_name);
+    const connectionString = normalizeConnectionString(body.connection_string);
+    const saved = await upsertManagedDatabase(dbName, connectionString);
+    await closeTargetPool(dbName);
+
+    logEvent("database_saved", request, { db_name: dbName });
+
+    json(response, 200, {
+      database: mapDatabaseRow(saved, true),
+    });
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/managed-databases/test") {
+    requireAdminSecret(request);
+    const body = await readJson(request);
+    const connectionString = normalizeConnectionString(body.connection_string);
+    const result = await testConnectionString(connectionString);
+
+    json(response, 200, {
+      ok: true,
+      current_database: result.current_database,
+    });
+    return true;
+  }
+
+  if (request.method === "DELETE" && pathname.startsWith("/api/managed-databases/")) {
+    requireAdminSecret(request);
+    const dbName = normalizeDbName(decodeURIComponent(pathname.split("/").pop()));
+    const deleted = await deleteManagedDatabase(dbName);
+    await closeTargetPool(dbName);
+
+    if (!deleted) {
+      throw new Error("Unknown db_name");
     }
 
-    if (request.method === "GET" && pathname === "/api/health") {
-      json(response, 200, { ok: true, databases: Object.keys(databases) });
-      return;
+    logEvent("database_deleted", request, { db_name: dbName });
+
+    json(response, 200, {
+      ok: true,
+      db_name: dbName,
+    });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/logs") {
+    const limit = Math.max(1, Math.min(Number(requestUrl.searchParams.get("limit")) || 50, 500));
+    json(response, 200, { logs: getRecentLogs(limit) });
+    return true;
+  }
+
+  if (request.method === "POST" && (pathname === "/token" || pathname === "/api/token")) {
+    requireAdminSecret(request);
+    const body = await readJson(request);
+    const dbName = normalizeDbName(body.db_name);
+    const access = normalizeAccess(body.access || "read_only");
+    const requestedTtl = Number(body.ttl_seconds || 3600);
+    const ttlSeconds = Math.max(1, Math.min(requestedTtl, 3600));
+    const database = await getManagedDatabase(dbName);
+
+    if (!database) {
+      throw new Error("Unknown db_name");
     }
 
-    if (request.method === "GET" && pathname === "/api/databases") {
-      json(response, 200, { databases: Object.keys(databases) });
-      return;
-    }
+    const token = createToken({ dbName, access, ttlSeconds });
 
-    if (request.method === "GET" && pathname === "/api/logs") {
-      const limit = Math.max(1, Math.min(Number(requestUrl.searchParams.get("limit")) || 50, 500));
-      json(response, 200, { logs: getRecentLogs(limit) });
-      return;
-    }
-
-    if (
-      request.method === "POST" &&
-      (pathname === "/token" || pathname === "/api/token")
-    ) {
-      const adminSecret = request.headers["x-admin-secret"];
-
-      if (!adminSecret || !safeEqual(adminSecret, PROXY_ADMIN_SECRET)) {
-        logEvent("token_denied", request);
-        json(response, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      const body = await readJson(request);
-      const dbName = typeof body.db_name === "string" ? body.db_name.trim() : "";
-      const access = normalizeAccess(body.access || "read_only");
-      const requestedTtl = Number(body.ttl_seconds || 3600);
-      const ttlSeconds = Math.max(1, Math.min(requestedTtl, 3600));
-
-      if (!dbName) {
-        throw new Error("Missing db_name");
-      }
-
-      if (!databases[dbName]) {
-        throw new Error("Unknown db_name");
-      }
-
-      const token = createToken({ dbName, access, ttlSeconds });
-
-      logEvent("token_issued", request, {
-        db_name: dbName,
-        access,
-        ttl_seconds: ttlSeconds,
-      });
-
-      json(response, 200, {
-        db_name: dbName,
-        access,
-        token,
-        expiresInSeconds: ttlSeconds,
-      });
-      return;
-    }
-
-    if (
-      request.method === "POST" &&
-      (pathname === "/sql" || pathname === "/api/sql")
-    ) {
-      const token = getBearerToken(request);
-      const claims = verifyToken(token);
-      const body = await readJson(request);
-      const dbName = typeof body.db_name === "string" ? body.db_name.trim() : "";
-      const sql = typeof body.sql === "string" ? body.sql : "";
-      const params = Array.isArray(body.params) ? body.params : [];
-
-      if (!dbName) {
-        throw new Error("Missing db_name");
-      }
-
-      if (claims.db_name !== dbName) {
-        throw new Error("Token does not allow this db_name");
-      }
-
-      if (!sql.trim()) {
-        throw new Error("Missing sql");
-      }
-
-      if (claims.access === "read_only" && !isReadOnlyQuery(sql)) {
-        logEvent("sql_denied", request, {
-          db_name: dbName,
-          access: claims.access,
-          reason: "read_only_token",
-          sql,
-        });
-        json(response, 403, { error: "This token is read_only" });
-        return;
-      }
-
-      const pool = getPool(dbName);
-      const result = await pool.query(sql, params);
-
-      logEvent("sql_ok", request, {
-        db_name: dbName,
-        access: claims.access,
-        command: result.command,
-        rowCount: result.rowCount,
-        sql,
-      });
-
-      json(response, 200, {
-        db_name: dbName,
-        access: claims.access,
-        command: result.command,
-        rowCount: result.rowCount,
-        rows: result.rows,
-      });
-      return;
-    }
-
-    if (request.method === "GET" && serveStatic(response, pathname)) {
-      return;
-    }
-
-    notFound(response);
-  } catch (error) {
-    logEvent("request_error", request, {
-      error: error.message || "Unknown error",
+    logEvent("token_issued", request, {
+      db_name: dbName,
+      access,
+      ttl_seconds: ttlSeconds,
     });
 
-    const statusCode =
-      error.message === "Unauthorized"
-        ? 401
-        : error.message === "This token is read_only"
-          ? 403
-          : error.message === "Request body too large"
-            ? 413
-            : 400;
-
-    json(response, statusCode, { error: error.message || "Unknown error" });
+    json(response, 200, {
+      db_name: dbName,
+      access,
+      token,
+      expiresInSeconds: ttlSeconds,
+    });
+    return true;
   }
-});
 
-server.listen(PORT, () => {
-  console.log(`Postgres proxy listening on http://localhost:${PORT}`);
-  console.log(`Configured databases: ${Object.keys(databases).join(", ")}`);
-  console.log(`Access log: ${accessLogPath}`);
+  if (request.method === "POST" && (pathname === "/sql" || pathname === "/api/sql")) {
+    const token = getBearerToken(request);
+    const claims = await verifyToken(token);
+    const body = await readJson(request);
+    const dbName = normalizeDbName(body.db_name);
+    const sql = typeof body.sql === "string" ? body.sql : "";
+    const params = Array.isArray(body.params) ? body.params : [];
+
+    if (claims.db_name !== dbName) {
+      throw new Error("Token does not allow this db_name");
+    }
+
+    if (!sql.trim()) {
+      throw new Error("Missing sql");
+    }
+
+    if (claims.access === "read_only" && !isReadOnlyQuery(sql)) {
+      logEvent("sql_denied", request, {
+        db_name: dbName,
+        access: claims.access,
+        reason: "read_only_token",
+        sql,
+      });
+      json(response, 403, { error: "This token is read_only" });
+      return true;
+    }
+
+    const pool = await getTargetPool(dbName);
+    const result = await pool.query(sql, params);
+
+    logEvent("sql_ok", request, {
+      db_name: dbName,
+      access: claims.access,
+      command: result.command,
+      rowCount: result.rowCount,
+      sql,
+    });
+
+    json(response, 200, {
+      db_name: dbName,
+      access: claims.access,
+      command: result.command,
+      rowCount: result.rowCount,
+      rows: result.rows,
+    });
+    return true;
+  }
+
+  return false;
+}
+
+async function startServer() {
+  await ensureSchema();
+
+  const server = http.createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    const pathname = requestUrl.pathname;
+
+    try {
+      if (request.method === "GET" && pathname === "/health") {
+        const databases = await listManagedDatabases();
+        json(response, 200, { ok: true, databases: databases.map((row) => row.db_name) });
+        return;
+      }
+
+      if (await handleApiRequest(request, response, pathname, requestUrl)) {
+        return;
+      }
+
+      if (request.method === "GET" && serveStatic(response, pathname)) {
+        return;
+      }
+
+      notFound(response);
+    } catch (error) {
+      logEvent("request_error", request, {
+        error: error.message || "Unknown error",
+      });
+
+      const statusCode =
+        error.message === "Unauthorized"
+          ? 401
+          : error.message === "This token is read_only"
+            ? 403
+            : error.message === "Request body too large"
+              ? 413
+              : error.message === "Unknown db_name" || error.message === "Token database is invalid"
+                ? 404
+                : 400;
+
+      json(response, statusCode, { error: error.message || "Unknown error" });
+    }
+  });
+
+  server.listen(PORT, () => {
+    console.log(`Postgres proxy listening on http://localhost:${PORT}`);
+    console.log(`Internal config database: connected`);
+    console.log(`Access log: ${ACCESS_LOG_PATH}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error(error);
+  process.exit(1);
 });
