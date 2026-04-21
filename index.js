@@ -11,6 +11,7 @@ const PORT = Number(process.env.PORT || 3000);
 const PROXY_ADMIN_SECRET = process.env.PROXY_ADMIN_SECRET;
 const PROXY_SIGNING_SECRET = process.env.PROXY_SIGNING_SECRET;
 const DATABASES_JSON = process.env.POSTGRES_DATABASES;
+const DATABASE_URL = process.env.DATABASE_URL;
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 if (!PROXY_ADMIN_SECRET) {
@@ -21,11 +22,7 @@ if (!PROXY_SIGNING_SECRET) {
   throw new Error("Missing PROXY_SIGNING_SECRET");
 }
 
-if (!DATABASES_JSON) {
-  throw new Error("Missing POSTGRES_DATABASES");
-}
-
-const databases = parseDatabases(DATABASES_JSON);
+const databases = parseDatabases(DATABASES_JSON || DATABASE_URL);
 const pools = new Map(
   Object.entries(databases).map(([dbName, connectionString]) => [
     dbName,
@@ -39,12 +36,33 @@ const accessLogPath = path.join(logsDir, "access.log");
 fs.mkdirSync(logsDir, { recursive: true });
 
 function parseDatabases(value) {
+  const normalizedValue = normalizeDatabaseConfigValue(value);
+
+  if (!normalizedValue) {
+    throw new Error("Missing POSTGRES_DATABASES or DATABASE_URL");
+  }
+
+  if (looksLikeConnectionString(normalizedValue)) {
+    return { main: normalizedValue };
+  }
+
+  const keyValuePairs = parseKeyValueDatabaseList(normalizedValue);
+  if (keyValuePairs) {
+    return keyValuePairs;
+  }
+
   let parsed;
 
   try {
-    parsed = JSON.parse(value);
+    parsed = JSON.parse(normalizedValue);
   } catch (error) {
-    throw new Error("POSTGRES_DATABASES must be valid JSON");
+    throw new Error(
+      "POSTGRES_DATABASES must be valid JSON, a single postgres:// URL, or db_name=postgres://..."
+    );
+  }
+
+  if (typeof parsed === "string" && looksLikeConnectionString(parsed)) {
+    return { main: parsed };
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -68,6 +86,66 @@ function parseDatabases(value) {
   }
 
   return parsed;
+}
+
+function normalizeDatabaseConfigValue(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  const hasWrappingSingleQuotes = trimmed.startsWith("'") && trimmed.endsWith("'");
+  const hasWrappingDoubleQuotes = trimmed.startsWith('"') && trimmed.endsWith('"');
+
+  if (hasWrappingSingleQuotes || hasWrappingDoubleQuotes) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
+
+function looksLikeConnectionString(value) {
+  return /^postgres(ql)?:\/\//i.test(value);
+}
+
+function parseKeyValueDatabaseList(value) {
+  if (!value.includes("=")) {
+    return null;
+  }
+
+  const parts = value
+    .split(/\r?\n|,(?=[^,=]+=)/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const databases = {};
+
+  for (const part of parts) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex <= 0) {
+      return null;
+    }
+
+    const dbName = part.slice(0, separatorIndex).trim();
+    const connectionString = part.slice(separatorIndex + 1).trim();
+
+    if (!dbName || !looksLikeConnectionString(connectionString)) {
+      return null;
+    }
+
+    databases[dbName] = connectionString;
+  }
+
+  return Object.keys(databases).length > 0 ? databases : null;
 }
 
 function appendAccessLog(entry) {

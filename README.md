@@ -10,6 +10,12 @@ Copy `.env.example` into `.env` and fill in the real values:
 PORT=3000
 PROXY_ADMIN_SECRET=change-this-admin-secret
 PROXY_SIGNING_SECRET=change-this-signing-secret
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+```
+
+Or for multiple databases:
+
+```env
 POSTGRES_DATABASES={"main":"postgres://postgres:postgres@localhost:5432/postgres","analytics":"postgres://postgres:postgres@localhost:5432/analytics"}
 ```
 
@@ -35,7 +41,7 @@ Required Railway variables:
 ```env
 PROXY_ADMIN_SECRET=change-this-admin-secret
 PROXY_SIGNING_SECRET=change-this-signing-secret
-POSTGRES_DATABASES={"main":"postgres://user:password@host:5432/db"}
+DATABASE_URL=postgres://user:password@host:5432/db
 ```
 
 Notes:
@@ -43,8 +49,12 @@ Notes:
 - Railway injects `PORT`, and this app already listens on it.
 - `railway.toml` sets the start command to `npm start`.
 - `railway.toml` sets the healthcheck path to `/health`.
-- If `POSTGRES_DATABASES` is missing or invalid JSON, Railway will mark the deploy as failed because the app exits on startup.
-- Easiest first deploy is one database only, for example `{"main":"postgres://..."}`.
+- Easiest first deploy is one database only with `DATABASE_URL`.
+- For multiple databases, you can still use `POSTGRES_DATABASES`.
+- `POSTGRES_DATABASES` now accepts:
+  - JSON object
+  - one plain `postgres://...` URL
+  - `main=postgres://...,analytics=postgres://...`
 
 ## 3. Mint a token
 
