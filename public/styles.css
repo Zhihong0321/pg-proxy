@@ -92,6 +92,13 @@ body {
   backdrop-filter: blur(14px);
 }
 
+.access-card {
+  margin-bottom: 20px;
+  background:
+    linear-gradient(135deg, rgba(178, 76, 45, 0.08), rgba(255, 252, 247, 0.9)),
+    var(--panel);
+}
+
 .card-head,
 .inline-actions {
   display: flex;
@@ -113,6 +120,16 @@ body {
 
 .stack.compact {
   margin-top: 16px;
+}
+
+.access-copy,
+.access-hint {
+  color: var(--muted);
+  margin: 12px 0 0;
+}
+
+.access-hint {
+  font-size: 0.92rem;
 }
 
 label span {

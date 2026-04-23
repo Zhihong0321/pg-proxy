@@ -3,6 +3,8 @@ const healthBadge = document.getElementById("healthBadge");
 const databaseCount = document.getElementById("databaseCount");
 const databasePills = document.getElementById("databasePills");
 const adminSecret = document.getElementById("adminSecret");
+const adminStatusBadge = document.getElementById("adminStatusBadge");
+const adminHint = document.getElementById("adminHint");
 const databaseForm = document.getElementById("databaseForm");
 const databaseResult = document.getElementById("databaseResult");
 const databaseTable = document.getElementById("databaseTable");
@@ -22,11 +24,28 @@ const refreshAllButton = document.getElementById("refreshAllButton");
 const refreshLogsButton = document.getElementById("refreshLogsButton");
 
 let managedDatabases = [];
+const ADMIN_SECRET_STORAGE_KEY = "pg-proxy-admin-secret";
+
+function getAdminSecretValue() {
+  return adminSecret.value.trim();
+}
+
+function updateAdminUi() {
+  if (getAdminSecretValue()) {
+    adminStatusBadge.textContent = "Ready";
+    adminStatusBadge.className = "badge ok";
+    adminHint.textContent = "Admin secret is set for this tab.";
+  } else {
+    adminStatusBadge.textContent = "Locked";
+    adminStatusBadge.className = "badge bad";
+    adminHint.textContent = "Enter admin secret to unlock database management and token generation.";
+  }
+}
 
 function getAdminHeaders() {
   return {
     "Content-Type": "application/json",
-    "x-admin-secret": adminSecret.value.trim(),
+    "x-admin-secret": getAdminSecretValue(),
   };
 }
 
@@ -35,6 +54,10 @@ async function requestJson(url, options = {}) {
   const data = await response.json();
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("Unauthorized. Enter the correct admin secret in the Admin Access box.");
+    }
+
     throw new Error(data.error || "Request failed");
   }
 
@@ -136,17 +159,17 @@ async function loadHealth() {
 }
 
 async function loadManagedDatabases() {
-  if (!adminSecret.value.trim()) {
+  if (!getAdminSecretValue()) {
     managedDatabases = [];
     renderManagedDatabases();
     renderDatabaseSelectors([]);
-    databaseResult.value = "Enter admin secret to manage target databases.";
+    databaseResult.value = "Enter admin secret in the Admin Access box first.";
     return;
   }
 
   const data = await requestJson("/api/managed-databases", {
     headers: {
-      "x-admin-secret": adminSecret.value.trim(),
+      "x-admin-secret": getAdminSecretValue(),
     },
   });
 
@@ -316,8 +339,24 @@ refreshAllButton.addEventListener("click", async () => {
 
 refreshDatabasesButton.addEventListener("click", loadManagedDatabases);
 refreshLogsButton.addEventListener("click", loadLogs);
+adminSecret.addEventListener("input", () => {
+  const value = getAdminSecretValue();
+  updateAdminUi();
+
+  if (value) {
+    sessionStorage.setItem(ADMIN_SECRET_STORAGE_KEY, value);
+  } else {
+    sessionStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
+  }
+});
 adminSecret.addEventListener("change", loadManagedDatabases);
 adminSecret.addEventListener("blur", loadManagedDatabases);
+
+const savedAdminSecret = sessionStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
+if (savedAdminSecret) {
+  adminSecret.value = savedAdminSecret;
+}
+updateAdminUi();
 
 Promise.all([loadHealth(), loadLogs()]).catch((error) => {
   healthValue.textContent = "ERROR";

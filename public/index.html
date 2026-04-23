@@ -23,6 +23,24 @@
         </nav>
       </header>
 
+      <section class="card access-card">
+        <div class="card-head">
+          <h2>Admin Access</h2>
+          <span class="badge bad" id="adminStatusBadge">Locked</span>
+        </div>
+        <p class="access-copy">
+          Saving databases and generating tokens require the admin secret. Enter it
+          once here before using the controls below.
+        </p>
+        <label class="stack compact">
+          <span>Admin secret</span>
+          <input id="adminSecret" type="password" placeholder="x-admin-secret" />
+        </label>
+        <p class="access-hint" id="adminHint">
+          Enter admin secret to unlock database management and token generation.
+        </p>
+      </section>
+
       <section class="grid two">
         <article class="card">
           <div class="card-head">
@@ -47,17 +65,13 @@
               <strong>logs/access.log</strong>
             </div>
           </div>
-          <label class="stack compact">
-            <span>Admin secret</span>
-            <input id="adminSecret" type="password" placeholder="x-admin-secret" />
-          </label>
           <div id="databasePills" class="pill-row"></div>
         </article>
 
         <article class="card">
           <div class="card-head">
             <h2>Manage Target Database</h2>
-            <span class="badge subtle">Saved in DATABASE_URL DB</span>
+            <span class="badge subtle">Admin Secret Required</span>
           </div>
           <form id="databaseForm" class="stack">
             <label>
