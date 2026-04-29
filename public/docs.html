@@ -106,7 +106,7 @@ Body:
 
       <section class="doc-card">
         <h2>POST /api/token</h2>
-        <p>Admin-only. Creates a short-lived token for one saved <code>db_name</code>.</p>
+        <p>Admin-only. Creates a token for one saved <code>db_name</code>.</p>
         <pre><code>Headers:
   x-admin-secret: YOUR_ADMIN_SECRET
 
@@ -121,7 +121,12 @@ Body:
   "db_name": "main",
   "access": "read_only",
   "token": "&lt;jwt-like-string&gt;",
-  "expiresInSeconds": 3600
+  "expiresInSeconds": 3600,
+  "proxyUrl": "https://pg-proxy-production.up.railway.app/",
+  "apiDocsUrl": "https://pg-proxy-production.up.railway.app/docs",
+  "sqlUrl": "https://pg-proxy-production.up.railway.app/api/sql",
+  "authorization": "Bearer &lt;jwt-like-string&gt;",
+  "aiConnectionPacket": "POSTGRES PROXY CONNECTION\n..."
 }</code></pre>
       </section>
 
@@ -149,7 +154,9 @@ Body:
           <h2>Required Env</h2>
           <pre><code>DATABASE_URL=postgres://proxy-app-db
 PROXY_ADMIN_SECRET=change-this-admin-secret
-PROXY_SIGNING_SECRET=change-this-signing-secret</code></pre>
+PROXY_SIGNING_SECRET=change-this-signing-secret
+PROXY_TOKEN_DEFAULT_TTL_SECONDS=3600
+PUBLIC_PROXY_BASE_URL=https://pg-proxy-production.up.railway.app/</code></pre>
         </article>
 
         <article class="doc-card">
@@ -159,7 +166,9 @@ PROXY_SIGNING_SECRET=change-this-signing-secret</code></pre>
 - token is bound to one db_name
 - access is read_only or full
 - read_only accepts only SQL starting with SELECT
-- max token lifetime is 3600 seconds</code></pre>
+- ttl_seconds defaults to PROXY_TOKEN_DEFAULT_TTL_SECONDS
+- set PROXY_TOKEN_MAX_TTL_SECONDS only if you want a cap
+- token responses include a paste-ready AI connection packet</code></pre>
         </article>
       </section>
     </main>

@@ -11,6 +11,10 @@ PORT=3000
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres_proxy
 PROXY_ADMIN_SECRET=change-this-admin-secret
 PROXY_SIGNING_SECRET=change-this-signing-secret
+PROXY_TOKEN_DEFAULT_TTL_SECONDS=3600
+# Optional. Leave unset for no owner-side maximum.
+# PROXY_TOKEN_MAX_TTL_SECONDS=86400
+PUBLIC_PROXY_BASE_URL=https://pg-proxy-production.up.railway.app/
 ```
 
 ## 2. Start
@@ -36,6 +40,10 @@ Required Railway variables:
 DATABASE_URL=postgres://user:password@host:5432/proxy_app_db
 PROXY_ADMIN_SECRET=change-this-admin-secret
 PROXY_SIGNING_SECRET=change-this-signing-secret
+PROXY_TOKEN_DEFAULT_TTL_SECONDS=3600
+# Optional. Leave unset for no owner-side maximum.
+# PROXY_TOKEN_MAX_TTL_SECONDS=86400
+PUBLIC_PROXY_BASE_URL=https://pg-proxy-production.up.railway.app/
 ```
 
 Notes:
@@ -69,7 +77,9 @@ Token request fields:
 
 - `db_name`: which saved target database to use
 - `access`: `read_only` or `full`
-- `ttl_seconds`: token lifetime, max 3600
+- `ttl_seconds`: token lifetime in seconds. If omitted, `PROXY_TOKEN_DEFAULT_TTL_SECONDS` is used. There is no maximum unless `PROXY_TOKEN_MAX_TTL_SECONDS` is set.
+
+Token responses include an `aiConnectionPacket` field. Paste that whole packet into an AI so it has the proxy URL, API docs URL, database name, access level, and bearer token in one place.
 
 ## 5. Use the token for SQL
 
@@ -108,3 +118,5 @@ Recent logs are also available from:
 - Tokens are bound to one `db_name`.
 - `read_only` tokens only allow SQL starting with `SELECT`.
 - `full` tokens allow any SQL.
+- Token lifetime defaults to `PROXY_TOKEN_DEFAULT_TTL_SECONDS`; set `PROXY_TOKEN_MAX_TTL_SECONDS` only if you want an owner-side cap.
+- Generated tokens include proxy metadata, and token responses include a paste-ready AI connection packet. `PUBLIC_PROXY_BASE_URL` controls the public URL inside that packet.

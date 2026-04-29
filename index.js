@@ -11,6 +11,15 @@ const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL;
 const PROXY_ADMIN_SECRET = process.env.PROXY_ADMIN_SECRET;
 const PROXY_SIGNING_SECRET = process.env.PROXY_SIGNING_SECRET;
+const DEFAULT_PUBLIC_PROXY_BASE_URL = "https://pg-proxy-production.up.railway.app/";
+const DEFAULT_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
+  "PROXY_TOKEN_DEFAULT_TTL_SECONDS",
+  3600
+);
+const MAX_TOKEN_TTL_SECONDS = parseOptionalPositiveIntegerEnv("PROXY_TOKEN_MAX_TTL_SECONDS");
+const PUBLIC_PROXY_BASE_URL = normalizeOptionalBaseUrl(
+  process.env.PUBLIC_PROXY_BASE_URL || DEFAULT_PUBLIC_PROXY_BASE_URL
+);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const LOGS_DIR = path.join(__dirname, "logs");
 const ACCESS_LOG_PATH = path.join(LOGS_DIR, "access.log");
@@ -78,6 +87,104 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
+function parsePositiveIntegerEnv(name, fallback) {
+  const raw = process.env[name];
+
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function parseOptionalPositiveIntegerEnv(name) {
+  const raw = process.env[name];
+
+  if (raw === undefined || raw === "") {
+    return null;
+  }
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function resolveTokenTtlSeconds(value) {
+  const ttlSeconds = value === undefined || value === null || value === ""
+    ? DEFAULT_TOKEN_TTL_SECONDS
+    : Number(value);
+
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1) {
+    throw new Error("ttl_seconds must be a positive integer");
+  }
+
+  if (MAX_TOKEN_TTL_SECONDS !== null && ttlSeconds > MAX_TOKEN_TTL_SECONDS) {
+    throw new Error(`ttl_seconds must be less than or equal to ${MAX_TOKEN_TTL_SECONDS}`);
+  }
+
+  return ttlSeconds;
+}
+
+function normalizeOptionalBaseUrl(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new URL(value);
+  parsed.pathname = "/";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function getPublicProxyBaseUrl(request) {
+  if (PUBLIC_PROXY_BASE_URL) {
+    return PUBLIC_PROXY_BASE_URL;
+  }
+
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const forwardedHost = request.headers["x-forwarded-host"];
+  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const host = Array.isArray(forwardedHost)
+    ? forwardedHost[0]
+    : forwardedHost || request.headers.host || `localhost:${PORT}`;
+
+  return `${proto || "http"}://${host}/`;
+}
+
+function buildTokenContext({ token, dbName, access, ttlSeconds, proxyUrl, docsUrl }) {
+  const sqlUrl = new URL("/api/sql", proxyUrl).toString();
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+  const authorization = `Bearer ${token}`;
+
+  return {
+    proxyUrl,
+    apiDocsUrl: docsUrl,
+    sqlUrl,
+    authorization,
+    expiresAt,
+    aiConnectionPacket: [
+      "POSTGRES PROXY CONNECTION",
+      `Proxy URL: ${proxyUrl}`,
+      `API docs: ${docsUrl}`,
+      `Database: ${dbName}`,
+      `Access: ${access}`,
+      `Expires at: ${expiresAt}`,
+      `Authorization header: ${authorization}`,
+      `Run SQL with POST ${sqlUrl}`,
+      `JSON body example: {"db_name":"${dbName}","sql":"select now() as now","params":[]}`,
+    ].join("\n"),
+  };
+}
+
 function sign(input) {
   return crypto
     .createHmac("sha256", PROXY_SIGNING_SECRET)
@@ -88,7 +195,13 @@ function sign(input) {
     .replace(/=+$/g, "");
 }
 
-function createToken({ dbName, access, ttlSeconds = 3600 }) {
+function createToken({
+  dbName,
+  access,
+  ttlSeconds = DEFAULT_TOKEN_TTL_SECONDS,
+  proxyUrl,
+  docsUrl,
+}) {
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = base64UrlEncode(
@@ -97,6 +210,8 @@ function createToken({ dbName, access, ttlSeconds = 3600 }) {
       exp: now + ttlSeconds,
       db_name: dbName,
       access,
+      proxy_url: proxyUrl,
+      api_docs_url: docsUrl,
     })
   );
   const signature = sign(`${header}.${payload}`);
@@ -524,15 +639,24 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
     const body = await readJson(request);
     const dbName = normalizeDbName(body.db_name);
     const access = normalizeAccess(body.access || "read_only");
-    const requestedTtl = Number(body.ttl_seconds || 3600);
-    const ttlSeconds = Math.max(1, Math.min(requestedTtl, 3600));
+    const ttlSeconds = resolveTokenTtlSeconds(body.ttl_seconds);
     const database = await getManagedDatabase(dbName);
 
     if (!database) {
       throw new Error("Unknown db_name");
     }
 
-    const token = createToken({ dbName, access, ttlSeconds });
+    const proxyUrl = getPublicProxyBaseUrl(request);
+    const docsUrl = new URL("/docs", proxyUrl).toString();
+    const token = createToken({ dbName, access, ttlSeconds, proxyUrl, docsUrl });
+    const tokenContext = buildTokenContext({
+      token,
+      dbName,
+      access,
+      ttlSeconds,
+      proxyUrl,
+      docsUrl,
+    });
 
     logEvent("token_issued", request, {
       db_name: dbName,
@@ -545,6 +669,12 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
       access,
       token,
       expiresInSeconds: ttlSeconds,
+      proxyUrl: tokenContext.proxyUrl,
+      apiDocsUrl: tokenContext.apiDocsUrl,
+      sqlUrl: tokenContext.sqlUrl,
+      authorization: tokenContext.authorization,
+      expiresAt: tokenContext.expiresAt,
+      aiConnectionPacket: tokenContext.aiConnectionPacket,
     });
     return true;
   }

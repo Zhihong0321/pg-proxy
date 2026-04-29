@@ -272,11 +272,15 @@ tokenForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const formData = new FormData(tokenForm);
+  const ttlSeconds = formData.get("ttl_seconds");
   const body = {
     db_name: formData.get("db_name"),
     access: formData.get("access"),
-    ttl_seconds: Number(formData.get("ttl_seconds") || 3600),
   };
+
+  if (ttlSeconds) {
+    body.ttl_seconds = Number(ttlSeconds);
+  }
 
   try {
     const data = await requestJson("/api/token", {
@@ -285,7 +289,7 @@ tokenForm.addEventListener("submit", async (event) => {
       body: JSON.stringify(body),
     });
 
-    tokenOutput.value = JSON.stringify(data, null, 2);
+    tokenOutput.value = data.aiConnectionPacket || JSON.stringify(data, null, 2);
     sqlToken.value = data.token;
     sqlDbName.value = data.db_name;
     await loadLogs();

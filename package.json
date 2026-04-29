@@ -1,7 +1,7 @@
 {
   "name": "postgres-proxy",
   "version": "1.0.0",
-  "description": "Tiny Postgres proxy with hourly signed tokens",
+  "description": "Tiny Postgres proxy with configurable signed tokens",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
