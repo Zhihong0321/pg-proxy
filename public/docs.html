@@ -165,7 +165,7 @@ PUBLIC_PROXY_BASE_URL=https://pg-proxy-production.up.railway.app/</code></pre>
 - target databases are stored in managed_databases
 - token is bound to one db_name
 - access is read_only or full
-- read_only accepts only SQL starting with SELECT
+- read_only accepts one SELECT statement, including read-only WITH ... SELECT CTEs
 - ttl_seconds defaults to PROXY_TOKEN_DEFAULT_TTL_SECONDS
 - set PROXY_TOKEN_MAX_TTL_SECONDS only if you want a cap
 - token responses include a paste-ready AI connection packet</code></pre>

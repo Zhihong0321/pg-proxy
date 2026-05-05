@@ -315,7 +315,253 @@ function normalizeAccess(value) {
 }
 
 function isReadOnlyQuery(sql) {
-  return /^\s*select\b/i.test(sql);
+  const tokens = tokenizeSql(sql);
+  let start = 0;
+
+  while (tokens[start] && tokens[start].value === ";") {
+    start += 1;
+  }
+
+  const end = findStatementEnd(tokens, start);
+  if (start === end || !isReadOnlyStatement(tokens, start, end)) {
+    return false;
+  }
+
+  return tokens.slice(end).every((token) => token.value === ";");
+}
+
+function tokenizeSql(sql) {
+  const tokens = [];
+  let index = 0;
+
+  while (index < sql.length) {
+    const char = sql[index];
+    const nextChar = sql[index + 1];
+
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (char === "-" && nextChar === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n") {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "/" && nextChar === "*") {
+      index = skipBlockComment(sql, index + 2);
+      continue;
+    }
+
+    if (char === "'") {
+      index = skipQuotedString(sql, index + 1, "'");
+      continue;
+    }
+
+    if (char === "\"") {
+      const end = skipQuotedString(sql, index + 1, "\"");
+      tokens.push({ type: "identifier", value: sql.slice(index, end) });
+      index = end;
+      continue;
+    }
+
+    const dollarQuote = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+    if (dollarQuote) {
+      const marker = dollarQuote[0];
+      const end = sql.indexOf(marker, index + marker.length);
+      index = end === -1 ? sql.length : end + marker.length;
+      continue;
+    }
+
+    if (/[A-Za-z_]/.test(char)) {
+      const start = index;
+      index += 1;
+      while (index < sql.length && /[A-Za-z0-9_$]/.test(sql[index])) {
+        index += 1;
+      }
+      tokens.push({ type: "word", value: sql.slice(start, index).toLowerCase() });
+      continue;
+    }
+
+    if ("(),;".includes(char)) {
+      tokens.push({ type: "symbol", value: char });
+    }
+
+    index += 1;
+  }
+
+  return tokens;
+}
+
+function skipBlockComment(sql, index) {
+  let depth = 1;
+
+  while (index < sql.length && depth > 0) {
+    if (sql[index] === "/" && sql[index + 1] === "*") {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+
+    if (sql[index] === "*" && sql[index + 1] === "/") {
+      depth -= 1;
+      index += 2;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return index;
+}
+
+function skipQuotedString(sql, index, quote) {
+  while (index < sql.length) {
+    if (sql[index] === quote) {
+      if (sql[index + 1] === quote) {
+        index += 2;
+        continue;
+      }
+
+      return index + 1;
+    }
+
+    index += 1;
+  }
+
+  return index;
+}
+
+function findStatementEnd(tokens, start) {
+  let depth = 0;
+
+  for (let index = start; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (token.value === "(") {
+      depth += 1;
+    } else if (token.value === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (token.value === ";" && depth === 0) {
+      return index;
+    }
+  }
+
+  return tokens.length;
+}
+
+function isReadOnlyStatement(tokens, start, end) {
+  const firstToken = tokens[start];
+
+  if (!firstToken || firstToken.type !== "word") {
+    return false;
+  }
+
+  if (firstToken.value === "select") {
+    return true;
+  }
+
+  if (firstToken.value === "with") {
+    return isReadOnlyWithStatement(tokens, start, end);
+  }
+
+  return false;
+}
+
+function isReadOnlyWithStatement(tokens, start, end) {
+  let index = start + 1;
+
+  if (isKeyword(tokens[index], "recursive")) {
+    index += 1;
+  }
+
+  while (index < end) {
+    if (!isIdentifierToken(tokens[index])) {
+      return false;
+    }
+    index += 1;
+
+    if (tokens[index] && tokens[index].value === "(") {
+      index = findMatchingParen(tokens, index, end) + 1;
+      if (index === 0) {
+        return false;
+      }
+    }
+
+    if (!isKeyword(tokens[index], "as")) {
+      return false;
+    }
+    index += 1;
+
+    if (isKeyword(tokens[index], "not") && isKeyword(tokens[index + 1], "materialized")) {
+      index += 2;
+    } else if (isKeyword(tokens[index], "materialized")) {
+      index += 1;
+    }
+
+    if (!tokens[index] || tokens[index].value !== "(") {
+      return false;
+    }
+
+    const bodyStart = index + 1;
+    const bodyEnd = findMatchingParen(tokens, index, end);
+    if (bodyEnd === -1 || !isReadOnlyStatement(tokens, bodyStart, bodyEnd)) {
+      return false;
+    }
+
+    index = bodyEnd + 1;
+
+    while (index < end) {
+      if (tokens[index].value === ",") {
+        index += 1;
+        break;
+      }
+
+      if (isStatementKeyword(tokens[index])) {
+        return tokens[index].value === "select";
+      }
+
+      index += 1;
+    }
+  }
+
+  return false;
+}
+
+function isIdentifierToken(token) {
+  return token && (token.type === "word" || token.type === "identifier");
+}
+
+function isKeyword(token, keyword) {
+  return token && token.type === "word" && token.value === keyword;
+}
+
+function isStatementKeyword(token) {
+  return (
+    token &&
+    token.type === "word" &&
+    ["select", "insert", "update", "delete", "merge", "values", "with"].includes(token.value)
+  );
+}
+
+function findMatchingParen(tokens, start, end) {
+  let depth = 0;
+
+  for (let index = start; index < end; index += 1) {
+    if (tokens[index].value === "(") {
+      depth += 1;
+    } else if (tokens[index].value === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
 }
 
 function logEvent(type, request, extra = {}) {
@@ -780,7 +1026,13 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  isReadOnlyQuery,
+};

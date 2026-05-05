@@ -116,7 +116,7 @@ Recent logs are also available from:
 - `DATABASE_URL` is the proxy app database.
 - AI target databases are stored in the `managed_databases` table.
 - Tokens are bound to one `db_name`.
-- `read_only` tokens only allow SQL starting with `SELECT`.
+- `read_only` tokens allow a single `SELECT` statement, including read-only `WITH ... SELECT` CTEs.
 - `full` tokens allow any SQL.
 - Token lifetime defaults to `PROXY_TOKEN_DEFAULT_TTL_SECONDS`; set `PROXY_TOKEN_MAX_TTL_SECONDS` only if you want an owner-side cap.
 - Generated tokens include proxy metadata, and token responses include a paste-ready AI connection packet. `PUBLIC_PROXY_BASE_URL` controls the public URL inside that packet.
