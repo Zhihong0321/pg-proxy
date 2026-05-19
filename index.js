@@ -1005,16 +1005,22 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
     let configDbOk = false;
     let configDbError = null;
     try {
-      const check = await appPool.query("select current_database() as db_name, now() as server_time");
+      await appPool.query("select current_database() as db_name, now() as server_time");
       configDbOk = true;
     } catch (err) {
       configDbError = err.message;
     }
 
-    const databases = await listManagedDatabases();
-    const profileCount = configDbOk
-      ? (await appPool.query("select count(*)::int as count from access_profiles")).rows[0].count
-      : 0;
+    const databases = configDbOk ? await listManagedDatabases() : [];
+    let profileCount = 0;
+    try {
+      if (configDbOk) {
+        const r = await appPool.query("select count(*)::int as count from access_profiles");
+        profileCount = r.rows[0].count;
+      }
+    } catch (e) {
+      // table may not exist yet, that's fine
+    }
 
     json(response, 200, {
       ok: configDbOk,
