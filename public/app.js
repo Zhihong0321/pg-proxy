@@ -280,3 +280,185 @@ sqlForm.addEventListener("submit", async (e) => {
     sqlResult.value = JSON.stringify(data, null, 2);
   } catch (err) { sqlResult.value = err.message; }
 });
+
+// --- Access Profiles ---
+function renderProfileSelectors(databases) {
+  profileDbName.innerHTML = "";
+  profileGenDbName.innerHTML = "";
+  for (const db of databases) {
+    const name = typeof db === "string" ? db : db.db_name;
+    profileDbName.innerHTML += `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`;
+    profileGenDbName.innerHTML += `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`;
+  }
+}
+
+async function loadProfiles() {
+  if (!getAdminSecretValue() || managedDatabases.length === 0) {
+    profileTable.className = "list-empty";
+    profileTable.textContent = "No profiles yet.";
+    tokenProfileName.innerHTML = '<option value="">No profile (unrestricted)</option>';
+    return;
+  }
+
+  let allProfiles = [];
+  for (const db of managedDatabases) {
+    try {
+      const data = await requestJson(`/api/access-profiles?db_name=${encodeURIComponent(db.db_name)}`, {
+        headers: { "x-admin-secret": getAdminSecretValue() },
+      });
+      allProfiles = allProfiles.concat(data.profiles || []);
+    } catch (e) { /* skip */ }
+  }
+
+  tokenProfileName.innerHTML = '<option value="">No profile (unrestricted)</option>';
+  for (const p of allProfiles) {
+    tokenProfileName.innerHTML += `<option value="${escapeAttr(p.profile_name)}">${escapeHtml(p.profile_name)} (${escapeHtml(p.db_name)})</option>`;
+  }
+
+  if (allProfiles.length === 0) {
+    profileTable.className = "list-empty";
+    profileTable.textContent = "No profiles yet.";
+    return;
+  }
+
+  profileTable.className = "";
+  profileTable.innerHTML = allProfiles.map((p) => `
+    <div class="list-item">
+      <strong>${escapeHtml(p.profile_name)}</strong>
+      <span class="hint">DB: ${escapeHtml(p.db_name)}</span>
+      <code>Allowed: [${(p.allowed_tables || []).map(escapeHtml).join(", ")}]</code>
+      <code>Denied: [${(p.denied_tables || []).map(escapeHtml).join(", ")}]</code>
+      ${p.description ? `<span class="hint">${escapeHtml(p.description)}</span>` : ""}
+      <div class="list-meta">
+        <span>${new Date(p.updated_at).toLocaleDateString()}</span>
+        <div class="btn-row">
+          <button class="btn btn-ghost btn-sm" data-profile-action="edit" data-db-name="${escapeAttr(p.db_name)}" data-profile-name="${escapeAttr(p.profile_name)}">Edit</button>
+          <button class="btn btn-ghost btn-sm" data-profile-action="delete" data-db-name="${escapeAttr(p.db_name)}" data-profile-name="${escapeAttr(p.profile_name)}">Delete</button>
+        </div>
+      </div>
+    </div>
+  `).join("");
+}
+
+profileForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(profileForm);
+  const body = {
+    db_name: fd.get("db_name"),
+    profile_name: fd.get("profile_name"),
+    allowed_tables: (fd.get("allowed_tables") || "").split(",").map((s) => s.trim()).filter(Boolean),
+    denied_tables: (fd.get("denied_tables") || "").split(",").map((s) => s.trim()).filter(Boolean),
+    description: fd.get("description") || "",
+  };
+  try {
+    const data = await requestJson("/api/access-profiles", {
+      method: "POST", headers: getAdminHeaders(), body: JSON.stringify(body),
+    });
+    profileResult.value = JSON.stringify(data, null, 2);
+    await loadProfiles();
+  } catch (err) { profileResult.value = err.message; }
+});
+
+profileGenerateForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(profileGenerateForm);
+  const body = { db_name: fd.get("db_name"), description: fd.get("description") };
+  try {
+    const data = await requestJson("/api/access-profiles/generate", {
+      method: "POST", headers: getAdminHeaders(), body: JSON.stringify(body),
+    });
+    lastGeneratedProfile = data;
+    profileGenResult.value = JSON.stringify(data, null, 2);
+  } catch (err) { profileGenResult.value = err.message; }
+});
+
+applyGeneratedProfile.addEventListener("click", () => {
+  if (!lastGeneratedProfile) { profileResult.value = "Generate a profile first."; return; }
+  const sp = lastGeneratedProfile.suggested_profile;
+  profileForm.elements.db_name.value = lastGeneratedProfile.db_name;
+  profileForm.elements.allowed_tables.value = (sp.allowed_tables || []).join(", ");
+  profileForm.elements.denied_tables.value = (sp.denied_tables || []).join(", ");
+  profileForm.elements.description.value = lastGeneratedProfile.description || "";
+  profileResult.value = "Applied. Set a profile_name and click Save.";
+});
+
+introspectTablesButton.addEventListener("click", async () => {
+  const dbName = profileGenDbName.value;
+  if (!dbName) { profileGenResult.value = "Select a database first."; return; }
+  try {
+    const data = await requestJson(`/api/introspect-tables?db_name=${encodeURIComponent(dbName)}`, {
+      headers: { "x-admin-secret": getAdminSecretValue() },
+    });
+    profileGenResult.value = data.tables.map((t) => `${t.table_schema}.${t.table_name} (${t.table_type})`).join("\n");
+  } catch (err) { profileGenResult.value = err.message; }
+});
+
+clearProfileButton.addEventListener("click", () => { profileForm.reset(); profileResult.value = ""; });
+refreshProfilesButton.addEventListener("click", loadProfiles);
+
+profileTable.addEventListener("click", async (e) => {
+  const target = e.target.closest("[data-profile-action]");
+  if (!target) return;
+  const action = target.dataset.profileAction;
+  const dbName = target.dataset.dbName;
+  const profileName = target.dataset.profileName;
+
+  if (action === "edit") {
+    try {
+      const data = await requestJson(`/api/access-profiles/${encodeURIComponent(profileName)}?db_name=${encodeURIComponent(dbName)}`, {
+        headers: { "x-admin-secret": getAdminSecretValue() },
+      });
+      const p = data.profile;
+      profileForm.elements.db_name.value = p.db_name;
+      profileForm.elements.profile_name.value = p.profile_name;
+      profileForm.elements.allowed_tables.value = (p.allowed_tables || []).join(", ");
+      profileForm.elements.denied_tables.value = (p.denied_tables || []).join(", ");
+      profileForm.elements.description.value = p.description || "";
+      profileResult.value = `Loaded '${p.profile_name}'`;
+    } catch (err) { profileResult.value = err.message; }
+    return;
+  }
+
+  if (action === "delete") {
+    try {
+      await requestJson(`/api/access-profiles/${encodeURIComponent(profileName)}?db_name=${encodeURIComponent(dbName)}`, {
+        method: "DELETE", headers: { "x-admin-secret": getAdminSecretValue() },
+      });
+      profileResult.value = `Deleted '${profileName}'`;
+      await loadProfiles();
+    } catch (err) { profileResult.value = err.message; }
+  }
+});
+
+// --- Admin Secret & Init ---
+adminSecret.addEventListener("input", () => {
+  const value = getAdminSecretValue();
+  updateAdminUi();
+  if (value) {
+    sessionStorage.setItem(ADMIN_SECRET_STORAGE_KEY, value);
+  } else {
+    sessionStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
+  }
+});
+adminSecret.addEventListener("change", loadManagedDatabases);
+
+refreshAllButton.addEventListener("click", async () => {
+  await loadHealth();
+  await loadManagedDatabases();
+  await loadLogs();
+});
+refreshLogsButton.addEventListener("click", loadLogs);
+
+// Restore saved secret
+const savedSecret = sessionStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
+if (savedSecret) {
+  adminSecret.value = savedSecret;
+  updateAdminUi();
+}
+
+// Boot
+loadHealth();
+loadLogs();
+if (getAdminSecretValue()) {
+  loadManagedDatabases();
+}
