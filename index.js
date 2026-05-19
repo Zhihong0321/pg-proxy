@@ -160,10 +160,27 @@ function getPublicProxyBaseUrl(request) {
   return `${proto || "http"}://${host}/`;
 }
 
-function buildTokenContext({ token, dbName, access, ttlSeconds, proxyUrl, docsUrl }) {
+function buildTokenContext({ token, dbName, access, ttlSeconds, proxyUrl, docsUrl, profileName }) {
   const sqlUrl = new URL("/api/sql", proxyUrl).toString();
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
   const authorization = `Bearer ${token}`;
+
+  const lines = [
+    "POSTGRES PROXY CONNECTION",
+    `Proxy URL: ${proxyUrl}`,
+    `API docs: ${docsUrl}`,
+    `Database: ${dbName}`,
+    `Access: ${access}`,
+  ];
+  if (profileName) {
+    lines.push(`Profile: ${profileName} (table-level write limiter active)`);
+  }
+  lines.push(
+    `Expires at: ${expiresAt}`,
+    `Authorization header: ${authorization}`,
+    `Run SQL with POST ${sqlUrl}`,
+    `JSON body example: {"db_name":"${dbName}","sql":"select now() as now","params":[]}`
+  );
 
   return {
     proxyUrl,
@@ -171,17 +188,7 @@ function buildTokenContext({ token, dbName, access, ttlSeconds, proxyUrl, docsUr
     sqlUrl,
     authorization,
     expiresAt,
-    aiConnectionPacket: [
-      "POSTGRES PROXY CONNECTION",
-      `Proxy URL: ${proxyUrl}`,
-      `API docs: ${docsUrl}`,
-      `Database: ${dbName}`,
-      `Access: ${access}`,
-      `Expires at: ${expiresAt}`,
-      `Authorization header: ${authorization}`,
-      `Run SQL with POST ${sqlUrl}`,
-      `JSON body example: {"db_name":"${dbName}","sql":"select now() as now","params":[]}`,
-    ].join("\n"),
+    aiConnectionPacket: lines.join("\n"),
   };
 }
 
@@ -201,19 +208,22 @@ function createToken({
   ttlSeconds = DEFAULT_TOKEN_TTL_SECONDS,
   proxyUrl,
   docsUrl,
+  profileName,
 }) {
   const now = Math.floor(Date.now() / 1000);
   const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const payload = base64UrlEncode(
-    JSON.stringify({
-      iat: now,
-      exp: now + ttlSeconds,
-      db_name: dbName,
-      access,
-      proxy_url: proxyUrl,
-      api_docs_url: docsUrl,
-    })
-  );
+  const payloadObj = {
+    iat: now,
+    exp: now + ttlSeconds,
+    db_name: dbName,
+    access,
+    proxy_url: proxyUrl,
+    api_docs_url: docsUrl,
+  };
+  if (profileName) {
+    payloadObj.profile_name = profileName;
+  }
+  const payload = base64UrlEncode(JSON.stringify(payloadObj));
   const signature = sign(`${header}.${payload}`);
   return `${header}.${payload}.${signature}`;
 }
@@ -607,6 +617,10 @@ function getStaticFilePath(pathname) {
     return path.join(PUBLIC_DIR, "docs.html");
   }
 
+  if (pathname === "/ai-context") {
+    return path.join(PUBLIC_DIR, "ai-context.md");
+  }
+
   const cleanPath = pathname.replace(/^\/+/, "");
   return path.join(PUBLIC_DIR, cleanPath);
 }
@@ -618,6 +632,7 @@ function getContentType(filePath) {
   if (extension === ".css") return "text/css; charset=utf-8";
   if (extension === ".js") return "application/javascript; charset=utf-8";
   if (extension === ".json") return "application/json; charset=utf-8";
+  if (extension === ".md") return "text/markdown; charset=utf-8";
 
   return "text/plain; charset=utf-8";
 }
@@ -690,6 +705,20 @@ async function ensureSchema() {
       connection_string text not null,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now()
+    )
+  `);
+
+  await appPool.query(`
+    create table if not exists access_profiles (
+      id serial primary key,
+      db_name text not null references managed_databases(db_name) on delete cascade,
+      profile_name text not null,
+      allowed_tables text[] not null default '{}',
+      denied_tables text[] not null default '{}',
+      description text not null default '',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique(db_name, profile_name)
     )
   `);
 }
@@ -799,12 +828,203 @@ async function testConnectionString(connectionString) {
   }
 }
 
+// --- Access Profiles ---
+
+async function listAccessProfiles(dbName) {
+  const result = await appPool.query(
+    `select * from access_profiles where db_name = $1 order by profile_name asc`,
+    [dbName]
+  );
+  return result.rows;
+}
+
+async function getAccessProfile(dbName, profileName) {
+  const result = await appPool.query(
+    `select * from access_profiles where db_name = $1 and profile_name = $2`,
+    [dbName, profileName]
+  );
+  return result.rows[0] || null;
+}
+
+async function upsertAccessProfile(dbName, profileName, { allowedTables, deniedTables, description }) {
+  const result = await appPool.query(
+    `insert into access_profiles (db_name, profile_name, allowed_tables, denied_tables, description)
+     values ($1, $2, $3, $4, $5)
+     on conflict (db_name, profile_name)
+     do update set
+       allowed_tables = excluded.allowed_tables,
+       denied_tables = excluded.denied_tables,
+       description = excluded.description,
+       updated_at = now()
+     returning *`,
+    [dbName, profileName, allowedTables || [], deniedTables || [], description || ""]
+  );
+  return result.rows[0];
+}
+
+async function deleteAccessProfile(dbName, profileName) {
+  const result = await appPool.query(
+    `delete from access_profiles where db_name = $1 and profile_name = $2 returning *`,
+    [dbName, profileName]
+  );
+  return result.rowCount > 0;
+}
+
+async function introspectTables(dbName) {
+  const pool = await getTargetPool(dbName);
+  const result = await pool.query(`
+    select table_schema, table_name, table_type
+    from information_schema.tables
+    where table_schema not in ('pg_catalog', 'information_schema')
+    order by table_schema, table_name
+  `);
+  return result.rows;
+}
+
+function extractTargetTables(sql) {
+  const tables = new Set();
+  const normalized = sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  const insertMatch = normalized.match(/\binsert\s+into\s+(?:only\s+)?([^\s(]+)/gi);
+  if (insertMatch) {
+    for (const m of insertMatch) {
+      const table = m.replace(/\binsert\s+into\s+(?:only\s+)?/i, "").trim().replace(/"/g, "").toLowerCase();
+      tables.add(table);
+    }
+  }
+
+  const updateMatch = normalized.match(/\bupdate\s+(?:only\s+)?([^\s]+)/gi);
+  if (updateMatch) {
+    for (const m of updateMatch) {
+      const table = m.replace(/\bupdate\s+(?:only\s+)?/i, "").trim().replace(/"/g, "").toLowerCase();
+      tables.add(table);
+    }
+  }
+
+  const deleteMatch = normalized.match(/\bdelete\s+from\s+(?:only\s+)?([^\s]+)/gi);
+  if (deleteMatch) {
+    for (const m of deleteMatch) {
+      const table = m.replace(/\bdelete\s+from\s+(?:only\s+)?/i, "").trim().replace(/"/g, "").toLowerCase();
+      tables.add(table);
+    }
+  }
+
+  const truncateMatch = normalized.match(/\btruncate\s+(?:table\s+)?(?:only\s+)?([^\s;,]+)/gi);
+  if (truncateMatch) {
+    for (const m of truncateMatch) {
+      const table = m.replace(/\btruncate\s+(?:table\s+)?(?:only\s+)?/i, "").trim().replace(/"/g, "").toLowerCase();
+      tables.add(table);
+    }
+  }
+
+  return [...tables];
+}
+
+function checkTableAccess(sql, profile) {
+  if (isReadOnlyQuery(sql)) {
+    return { allowed: true };
+  }
+
+  const targetTables = extractTargetTables(sql);
+
+  if (targetTables.length === 0) {
+    return { allowed: false, reason: "Cannot determine target table for write operation" };
+  }
+
+  const allowedSet = new Set((profile.allowed_tables || []).map((t) => t.toLowerCase()));
+  const deniedSet = new Set((profile.denied_tables || []).map((t) => t.toLowerCase()));
+
+  for (const table of targetTables) {
+    const tableName = table.includes(".") ? table.split(".").pop() : table;
+    const fullName = table;
+
+    if (deniedSet.has(fullName) || deniedSet.has(tableName)) {
+      return { allowed: false, reason: `Table '${table}' is explicitly denied by profile '${profile.profile_name}'` };
+    }
+
+    if (allowedSet.size > 0) {
+      if (!allowedSet.has(fullName) && !allowedSet.has(tableName)) {
+        return { allowed: false, reason: `Table '${table}' is not in the allowed list for profile '${profile.profile_name}'` };
+      }
+    }
+  }
+
+  return { allowed: true };
+}
+
+function generateAiProfile(tables, description) {
+  const desc = description.toLowerCase();
+  const allowedTables = [];
+  const deniedTables = [];
+
+  for (const table of tables) {
+    const fullName = table.table_schema === "public"
+      ? table.table_name
+      : `${table.table_schema}.${table.table_name}`;
+
+    if (table.table_type === "VIEW") {
+      continue;
+    }
+
+    const isSystem = /migration|schema_version|knex_|flyway_|pgmigration/i.test(table.table_name);
+    const isSensitive = /user|account|auth|credential|password|secret|token|session|permission|role/i.test(table.table_name);
+
+    if (isSystem) {
+      deniedTables.push(fullName);
+      continue;
+    }
+
+    if (desc.includes("full") || desc.includes("all")) {
+      if (isSensitive) {
+        deniedTables.push(fullName);
+      } else {
+        allowedTables.push(fullName);
+      }
+      continue;
+    }
+
+    if (desc.includes(table.table_name.toLowerCase()) || desc.includes(fullName.toLowerCase())) {
+      allowedTables.push(fullName);
+      continue;
+    }
+
+    if (desc.includes("read") && !desc.includes("write")) {
+      continue;
+    }
+
+    if (isSensitive) {
+      deniedTables.push(fullName);
+    }
+  }
+
+  return { allowedTables, deniedTables };
+}
+
 async function handleApiRequest(request, response, pathname, requestUrl) {
   if (request.method === "GET" && pathname === "/api/health") {
+    let configDbOk = false;
+    let configDbError = null;
+    try {
+      const check = await appPool.query("select current_database() as db_name, now() as server_time");
+      configDbOk = true;
+    } catch (err) {
+      configDbError = err.message;
+    }
+
     const databases = await listManagedDatabases();
+    const profileCount = configDbOk
+      ? (await appPool.query("select count(*)::int as count from access_profiles")).rows[0].count
+      : 0;
+
     json(response, 200, {
-      ok: true,
+      ok: configDbOk,
+      config_db: {
+        status: configDbOk ? "healthy" : "error",
+        error: configDbError,
+      },
       database_count: databases.length,
+      profile_count: profileCount,
+      schema_initialized: configDbOk,
     });
     return true;
   }
@@ -880,21 +1100,138 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
     return true;
   }
 
+  // --- Access Profiles API ---
+
+  if (request.method === "GET" && pathname === "/api/access-profiles") {
+    requireAdminSecret(request);
+    const dbName = requestUrl.searchParams.get("db_name");
+    if (!dbName) {
+      throw new Error("Missing db_name query parameter");
+    }
+    const profiles = await listAccessProfiles(dbName);
+    json(response, 200, { profiles });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname.startsWith("/api/access-profiles/")) {
+    requireAdminSecret(request);
+    const parts = pathname.split("/").filter(Boolean);
+    const dbName = requestUrl.searchParams.get("db_name");
+    const profileName = decodeURIComponent(parts[2] || "");
+    if (!dbName) {
+      throw new Error("Missing db_name query parameter");
+    }
+    const profile = await getAccessProfile(dbName, profileName);
+    if (!profile) {
+      throw new Error("Profile not found");
+    }
+    json(response, 200, { profile });
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/access-profiles") {
+    requireAdminSecret(request);
+    const body = await readJson(request);
+    const dbName = normalizeDbName(body.db_name);
+    const profileName = (body.profile_name || "").trim();
+    if (!profileName || !/^[a-zA-Z0-9_-]+$/.test(profileName)) {
+      throw new Error("profile_name must be alphanumeric with dashes/underscores");
+    }
+    const database = await getManagedDatabase(dbName);
+    if (!database) {
+      throw new Error("Unknown db_name");
+    }
+    const saved = await upsertAccessProfile(dbName, profileName, {
+      allowedTables: body.allowed_tables || [],
+      deniedTables: body.denied_tables || [],
+      description: body.description || "",
+    });
+    logEvent("profile_saved", request, { db_name: dbName, profile_name: profileName });
+    json(response, 200, { profile: saved });
+    return true;
+  }
+
+  if (request.method === "DELETE" && pathname.startsWith("/api/access-profiles/")) {
+    requireAdminSecret(request);
+    const parts = pathname.split("/").filter(Boolean);
+    const profileName = decodeURIComponent(parts[2] || "");
+    const dbName = requestUrl.searchParams.get("db_name");
+    if (!dbName) {
+      throw new Error("Missing db_name query parameter");
+    }
+    const deleted = await deleteAccessProfile(dbName, profileName);
+    if (!deleted) {
+      throw new Error("Profile not found");
+    }
+    logEvent("profile_deleted", request, { db_name: dbName, profile_name: profileName });
+    json(response, 200, { ok: true, db_name: dbName, profile_name: profileName });
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/access-profiles/generate") {
+    requireAdminSecret(request);
+    const body = await readJson(request);
+    const dbName = normalizeDbName(body.db_name);
+    const description = (body.description || "").trim();
+    if (!description) {
+      throw new Error("Missing description");
+    }
+    const database = await getManagedDatabase(dbName);
+    if (!database) {
+      throw new Error("Unknown db_name");
+    }
+    const tables = await introspectTables(dbName);
+    const generated = generateAiProfile(tables, description);
+    json(response, 200, {
+      db_name: dbName,
+      description,
+      tables: tables.map((t) => `${t.table_schema}.${t.table_name} (${t.table_type})`),
+      suggested_profile: {
+        allowed_tables: generated.allowedTables,
+        denied_tables: generated.deniedTables,
+      },
+    });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/introspect-tables") {
+    requireAdminSecret(request);
+    const dbName = requestUrl.searchParams.get("db_name");
+    if (!dbName) {
+      throw new Error("Missing db_name query parameter");
+    }
+    const database = await getManagedDatabase(dbName);
+    if (!database) {
+      throw new Error("Unknown db_name");
+    }
+    const tables = await introspectTables(dbName);
+    json(response, 200, { db_name: dbName, tables });
+    return true;
+  }
+
   if (request.method === "POST" && (pathname === "/token" || pathname === "/api/token")) {
     requireAdminSecret(request);
     const body = await readJson(request);
     const dbName = normalizeDbName(body.db_name);
     const access = normalizeAccess(body.access || "read_only");
     const ttlSeconds = resolveTokenTtlSeconds(body.ttl_seconds);
+    const profileName = body.profile_name || null;
     const database = await getManagedDatabase(dbName);
 
     if (!database) {
       throw new Error("Unknown db_name");
     }
 
+    if (profileName) {
+      const profile = await getAccessProfile(dbName, profileName);
+      if (!profile) {
+        throw new Error(`Unknown profile '${profileName}' for database '${dbName}'`);
+      }
+    }
+
     const proxyUrl = getPublicProxyBaseUrl(request);
     const docsUrl = new URL("/docs", proxyUrl).toString();
-    const token = createToken({ dbName, access, ttlSeconds, proxyUrl, docsUrl });
+    const token = createToken({ dbName, access, ttlSeconds, proxyUrl, docsUrl, profileName });
     const tokenContext = buildTokenContext({
       token,
       dbName,
@@ -902,17 +1239,20 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
       ttlSeconds,
       proxyUrl,
       docsUrl,
+      profileName,
     });
 
     logEvent("token_issued", request, {
       db_name: dbName,
       access,
+      profile_name: profileName,
       ttl_seconds: ttlSeconds,
     });
 
     json(response, 200, {
       db_name: dbName,
       access,
+      profile_name: profileName,
       token,
       expiresInSeconds: ttlSeconds,
       proxyUrl: tokenContext.proxyUrl,
@@ -952,12 +1292,31 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
       return true;
     }
 
+    if (claims.profile_name && claims.access === "full") {
+      const profile = await getAccessProfile(dbName, claims.profile_name);
+      if (profile) {
+        const accessCheck = checkTableAccess(sql, profile);
+        if (!accessCheck.allowed) {
+          logEvent("sql_denied", request, {
+            db_name: dbName,
+            access: claims.access,
+            profile_name: claims.profile_name,
+            reason: accessCheck.reason,
+            sql,
+          });
+          json(response, 403, { error: accessCheck.reason });
+          return true;
+        }
+      }
+    }
+
     const pool = await getTargetPool(dbName);
     const result = await pool.query(sql, params);
 
     logEvent("sql_ok", request, {
       db_name: dbName,
       access: claims.access,
+      profile_name: claims.profile_name || null,
       command: result.command,
       rowCount: result.rowCount,
       sql,
@@ -966,6 +1325,7 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
     json(response, 200, {
       db_name: dbName,
       access: claims.access,
+      profile_name: claims.profile_name || null,
       command: result.command,
       rowCount: result.rowCount,
       rows: result.rows,

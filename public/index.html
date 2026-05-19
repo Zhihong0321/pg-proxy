@@ -2,186 +2,195 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Postgres Proxy Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>PG Proxy</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <header class="hero">
-        <div>
-          <p class="eyebrow">Postgres Proxy</p>
-          <h1>Store AI target databases here, then issue tokens against them.</h1>
-          <p class="lede">
-            `DATABASE_URL` is the proxy app's own database. The AI-facing Postgres
-            connections below are managed from this UI.
-          </p>
-        </div>
-        <nav class="hero-actions">
-          <a class="button ghost" href="/docs">Open API Docs</a>
-          <button class="button" id="refreshAllButton" type="button">Refresh</button>
-        </nav>
-      </header>
+    <header class="topbar">
+      <h1>PG Proxy</h1>
+      <div class="topbar-actions">
+        <a href="/docs" class="btn btn-ghost btn-sm">Docs</a>
+        <button class="btn btn-sm" id="refreshAllButton" type="button">↻</button>
+      </div>
+    </header>
 
-      <section class="card access-card">
-        <div class="card-head">
-          <h2>Admin Access</h2>
-          <span class="badge bad" id="adminStatusBadge">Locked</span>
+    <main class="container">
+
+      <!-- Status Banner -->
+      <div class="status-bar" id="statusBar">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+
+      <!-- System Info -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="systemBody" aria-expanded="true">
+          <span>System</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body" id="systemBody">
+          <dl class="info-grid">
+            <dt>Config DB</dt><dd id="configDbStatus">...</dd>
+            <dt>Schema</dt><dd id="schemaStatus">...</dd>
+            <dt>Databases</dt><dd id="databaseCount">0</dd>
+            <dt>Profiles</dt><dd id="profileCount">0</dd>
+          </dl>
+          <div id="databasePills" class="pills"></div>
         </div>
-        <p class="access-copy">
-          Saving databases and generating tokens require the admin secret. Enter it
-          once here before using the controls below.
-        </p>
-        <label class="stack compact">
-          <span>Admin secret</span>
-          <input id="adminSecret" type="password" placeholder="x-admin-secret" />
-        </label>
-        <p class="access-hint" id="adminHint">
-          Enter admin secret to unlock database management and token generation.
-        </p>
       </section>
 
-      <section class="grid two">
-        <article class="card">
-          <div class="card-head">
-            <h2>System</h2>
-            <span class="badge" id="healthBadge">Checking</span>
-          </div>
-          <div class="meta-list">
-            <div>
-              <span>Health</span>
-              <strong id="healthValue">...</strong>
-            </div>
-            <div>
-              <span>Managed DBs</span>
-              <strong id="databaseCount">0</strong>
-            </div>
-            <div>
-              <span>Config DB</span>
-              <strong>DATABASE_URL</strong>
-            </div>
-            <div>
-              <span>Log File</span>
-              <strong>logs/access.log</strong>
-            </div>
-          </div>
-          <div id="databasePills" class="pill-row"></div>
-        </article>
+      <!-- Admin -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="adminBody" aria-expanded="true">
+          <span>Admin Access</span>
+          <span class="badge" id="adminStatusBadge">Locked</span>
+        </button>
+        <div class="panel-body" id="adminBody">
+          <input id="adminSecret" type="password" placeholder="Enter admin secret" class="input" />
+          <p class="hint" id="adminHint">Required for all management actions.</p>
+        </div>
+      </section>
 
-        <article class="card">
-          <div class="card-head">
-            <h2>Manage Target Database</h2>
-            <span class="badge subtle">Admin Secret Required</span>
-          </div>
-          <form id="databaseForm" class="stack">
-            <label>
-              <span>db_name</span>
-              <input name="db_name" type="text" placeholder="main" required />
-            </label>
-            <label>
-              <span>connection_string</span>
-              <textarea
-                name="connection_string"
-                rows="5"
-                placeholder="postgres://user:password@host:5432/db"
-                required
-              ></textarea>
-            </label>
-            <div class="button-row">
-              <button class="button" type="submit">Save Database</button>
-              <button class="button ghost" id="testDatabaseButton" type="button">Test Connection</button>
-              <button class="button ghost" id="clearDatabaseButton" type="button">Clear Form</button>
+      <!-- Manage DB -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="dbBody" aria-expanded="false">
+          <span>Manage Database</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body collapsed" id="dbBody">
+          <form id="databaseForm" class="form-stack">
+            <input name="db_name" type="text" placeholder="db_name (e.g. main)" required class="input" />
+            <textarea name="connection_string" rows="3" placeholder="postgres://user:pass@host:5432/db" required class="input"></textarea>
+            <div class="btn-row">
+              <button class="btn" type="submit">Save</button>
+              <button class="btn btn-ghost" id="testDatabaseButton" type="button">Test</button>
+              <button class="btn btn-ghost" id="clearDatabaseButton" type="button">Clear</button>
             </div>
           </form>
-          <label class="stack">
-            <span>Database action result</span>
-            <textarea id="databaseResult" rows="7" readonly></textarea>
-          </label>
-        </article>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <h2>Saved Target Databases</h2>
-          <button class="button ghost" id="refreshDatabasesButton" type="button">Refresh List</button>
+          <textarea id="databaseResult" rows="4" readonly class="output"></textarea>
         </div>
-        <div id="databaseTable" class="database-table empty">No saved databases yet.</div>
       </section>
 
-      <section class="grid two">
-        <article class="card">
-          <div class="card-head">
-            <h2>Create Token</h2>
-            <span class="badge subtle">Admin Secret Required</span>
-          </div>
-          <form id="tokenForm" class="stack">
-            <label>
-              <span>Database</span>
-              <select id="tokenDbName" name="db_name"></select>
-            </label>
-            <label>
-              <span>Access</span>
-              <select name="access">
-                <option value="read_only">read_only</option>
-                <option value="full">full</option>
-              </select>
-            </label>
-            <label>
-              <span>TTL seconds</span>
-              <input name="ttl_seconds" type="number" min="1" value="3600" />
-            </label>
-            <button class="button" type="submit">Generate Token</button>
-          </form>
-          <label class="stack">
-            <span>AI connection packet</span>
-            <textarea id="tokenOutput" rows="12" readonly></textarea>
-          </label>
-        </article>
-
-        <article class="card">
-          <div class="card-head">
-            <h2>Run SQL</h2>
-            <span class="badge subtle">Uses Bearer Token</span>
-          </div>
-          <form id="sqlForm" class="stack">
-            <label>
-              <span>Token</span>
-              <textarea id="sqlToken" name="token" rows="4" placeholder="Paste token here" required></textarea>
-            </label>
-            <label>
-              <span>Database</span>
-              <select id="sqlDbName" name="db_name"></select>
-            </label>
-            <label>
-              <span>SQL</span>
-              <textarea name="sql" rows="8" placeholder="select now() as now" required></textarea>
-            </label>
-            <label>
-              <span>Params JSON array</span>
-              <textarea name="params" rows="4">[]</textarea>
-            </label>
-            <button class="button" type="submit">Run SQL</button>
-          </form>
-          <label class="stack">
-            <span>Result</span>
-            <textarea id="sqlResult" rows="12" readonly></textarea>
-          </label>
-        </article>
+      <!-- Saved DBs -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="savedDbBody" aria-expanded="false">
+          <span>Saved Databases</span>
+          <button class="btn btn-ghost btn-sm" id="refreshDatabasesButton" type="button">↻</button>
+        </button>
+        <div class="panel-body collapsed" id="savedDbBody">
+          <div id="databaseTable" class="list-empty">No databases yet.</div>
+        </div>
       </section>
 
-      <section class="card">
-        <div class="card-head">
-          <h2>Recent Logs</h2>
-          <div class="inline-actions">
-            <label class="inline-field">
-              <span>Limit</span>
-              <input id="logLimit" type="number" min="1" max="500" value="50" />
-            </label>
-            <button class="button ghost" id="refreshLogsButton" type="button">Refresh Logs</button>
+      <!-- Create Token -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="tokenBody" aria-expanded="false">
+          <span>Create Token</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body collapsed" id="tokenBody">
+          <form id="tokenForm" class="form-stack">
+            <select id="tokenDbName" name="db_name" class="input"></select>
+            <select name="access" class="input">
+              <option value="read_only">read_only</option>
+              <option value="full">full</option>
+            </select>
+            <select id="tokenProfileName" name="profile_name" class="input">
+              <option value="">No profile (unrestricted)</option>
+            </select>
+            <input name="ttl_seconds" type="number" min="1" value="3600" placeholder="TTL seconds" class="input" />
+            <button class="btn" type="submit">Generate Token</button>
+          </form>
+          <textarea id="tokenOutput" rows="8" readonly class="output"></textarea>
+        </div>
+      </section>
+
+      <!-- Run SQL -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="sqlBody" aria-expanded="false">
+          <span>Run SQL</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body collapsed" id="sqlBody">
+          <form id="sqlForm" class="form-stack">
+            <textarea id="sqlToken" name="token" rows="2" placeholder="Bearer token" required class="input"></textarea>
+            <select id="sqlDbName" name="db_name" class="input"></select>
+            <textarea name="sql" rows="4" placeholder="SELECT now()" required class="input"></textarea>
+            <textarea name="params" rows="2" class="input">[]</textarea>
+            <button class="btn" type="submit">Run</button>
+          </form>
+          <textarea id="sqlResult" rows="8" readonly class="output"></textarea>
+        </div>
+      </section>
+
+      <!-- Access Profiles -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="profilesBody" aria-expanded="false">
+          <span>Access Profiles</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body collapsed" id="profilesBody">
+          <p class="hint">Restrict which tables a token can write to.</p>
+
+          <!-- AI Generator -->
+          <div class="sub-section">
+            <h3 class="sub-title">AI Generator</h3>
+            <form id="profileGenerateForm" class="form-stack">
+              <select id="profileGenDbName" name="db_name" class="input"></select>
+              <textarea name="description" rows="2" placeholder="e.g. Allow writes to orders and products only" class="input"></textarea>
+              <div class="btn-row">
+                <button class="btn" type="submit">Generate</button>
+                <button class="btn btn-ghost" id="introspectTablesButton" type="button">Tables</button>
+              </div>
+            </form>
+            <textarea id="profileGenResult" rows="5" readonly class="output"></textarea>
+            <button class="btn btn-ghost btn-full" id="applyGeneratedProfile" type="button">Apply to form ↓</button>
+          </div>
+
+          <!-- Save Profile -->
+          <div class="sub-section">
+            <h3 class="sub-title">Save Profile</h3>
+            <form id="profileForm" class="form-stack">
+              <select id="profileDbName" name="db_name" class="input"></select>
+              <input name="profile_name" type="text" placeholder="Profile name (e.g. ai-writer)" required class="input" />
+              <textarea name="allowed_tables" rows="2" placeholder="Allowed tables (comma-separated)" class="input"></textarea>
+              <textarea name="denied_tables" rows="2" placeholder="Denied tables (comma-separated)" class="input"></textarea>
+              <input name="description" type="text" placeholder="Description" class="input" />
+              <div class="btn-row">
+                <button class="btn" type="submit">Save</button>
+                <button class="btn btn-ghost" id="clearProfileButton" type="button">Clear</button>
+              </div>
+            </form>
+            <textarea id="profileResult" rows="3" readonly class="output"></textarea>
+          </div>
+
+          <!-- Saved Profiles -->
+          <div class="sub-section">
+            <div class="sub-header">
+              <h3 class="sub-title">Saved Profiles</h3>
+              <button class="btn btn-ghost btn-sm" id="refreshProfilesButton" type="button">↻</button>
+            </div>
+            <div id="profileTable" class="list-empty">No profiles yet.</div>
           </div>
         </div>
-        <textarea id="logsOutput" rows="24" readonly></textarea>
       </section>
+
+      <!-- Logs -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="logsBody" aria-expanded="false">
+          <span>Logs</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body collapsed" id="logsBody">
+          <div class="btn-row" style="margin-bottom: 8px;">
+            <input id="logLimit" type="number" min="1" max="500" value="50" class="input" style="width: 80px;" />
+            <button class="btn btn-ghost" id="refreshLogsButton" type="button">Refresh</button>
+          </div>
+          <textarea id="logsOutput" rows="16" readonly class="output"></textarea>
+        </div>
+      </section>
+
     </main>
 
     <script src="/app.js"></script>

@@ -1,6 +1,11 @@
-const healthValue = document.getElementById("healthValue");
-const healthBadge = document.getElementById("healthBadge");
+// --- Elements ---
+const statusBar = document.getElementById("statusBar");
+const statusDot = document.getElementById("statusDot");
+const statusText = document.getElementById("statusText");
+const configDbStatus = document.getElementById("configDbStatus");
+const schemaStatus = document.getElementById("schemaStatus");
 const databaseCount = document.getElementById("databaseCount");
+const profileCountEl = document.getElementById("profileCount");
 const databasePills = document.getElementById("databasePills");
 const adminSecret = document.getElementById("adminSecret");
 const adminStatusBadge = document.getElementById("adminStatusBadge");
@@ -22,140 +27,135 @@ const logsOutput = document.getElementById("logsOutput");
 const logLimit = document.getElementById("logLimit");
 const refreshAllButton = document.getElementById("refreshAllButton");
 const refreshLogsButton = document.getElementById("refreshLogsButton");
+const tokenProfileName = document.getElementById("tokenProfileName");
+const profileForm = document.getElementById("profileForm");
+const profileResult = document.getElementById("profileResult");
+const profileDbName = document.getElementById("profileDbName");
+const profileGenDbName = document.getElementById("profileGenDbName");
+const profileGenerateForm = document.getElementById("profileGenerateForm");
+const profileGenResult = document.getElementById("profileGenResult");
+const applyGeneratedProfile = document.getElementById("applyGeneratedProfile");
+const introspectTablesButton = document.getElementById("introspectTablesButton");
+const clearProfileButton = document.getElementById("clearProfileButton");
+const refreshProfilesButton = document.getElementById("refreshProfilesButton");
+const profileTable = document.getElementById("profileTable");
 
 let managedDatabases = [];
+let lastGeneratedProfile = null;
 const ADMIN_SECRET_STORAGE_KEY = "pg-proxy-admin-secret";
 
-function getAdminSecretValue() {
-  return adminSecret.value.trim();
+// --- Panel Toggle ---
+document.querySelectorAll(".panel-toggle").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const targetId = btn.dataset.target;
+    const body = document.getElementById(targetId);
+    if (!body) return;
+    const expanded = btn.getAttribute("aria-expanded") === "true";
+    btn.setAttribute("aria-expanded", String(!expanded));
+    body.classList.toggle("collapsed", expanded);
+  });
+});
+
+// --- Helpers ---
+function getAdminSecretValue() { return adminSecret.value.trim(); }
+
+function getAdminHeaders() {
+  return { "Content-Type": "application/json", "x-admin-secret": getAdminSecretValue() };
 }
 
 function updateAdminUi() {
   if (getAdminSecretValue()) {
     adminStatusBadge.textContent = "Ready";
     adminStatusBadge.className = "badge ok";
-    adminHint.textContent = "Admin secret is set for this tab.";
+    adminHint.textContent = "Admin secret set.";
   } else {
     adminStatusBadge.textContent = "Locked";
-    adminStatusBadge.className = "badge bad";
-    adminHint.textContent = "Enter admin secret to unlock database management and token generation.";
+    adminStatusBadge.className = "badge";
+    adminHint.textContent = "Required for all management actions.";
   }
-}
-
-function getAdminHeaders() {
-  return {
-    "Content-Type": "application/json",
-    "x-admin-secret": getAdminSecretValue(),
-  };
 }
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json();
-
   if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error("Unauthorized. Enter the correct admin secret in the Admin Access box.");
-    }
-
+    if (response.status === 401) throw new Error("Unauthorized. Check admin secret.");
     throw new Error(data.error || "Request failed");
   }
-
   return data;
 }
 
+function escapeHtml(v) {
+  return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function escapeAttr(v) { return escapeHtml(v).replace(/"/g,"&quot;"); }
+
+// --- Health ---
+async function loadHealth() {
+  try {
+    const data = await requestJson("/api/health");
+    statusDot.className = data.ok ? "status-dot ok" : "status-dot bad";
+    statusText.textContent = data.ok ? "Config DB healthy • Schema initialized" : "Config DB error";
+
+    if (data.config_db && data.config_db.status === "healthy") {
+      configDbStatus.textContent = "Healthy ✓";
+      configDbStatus.style.color = "var(--accent)";
+    } else {
+      configDbStatus.textContent = data.config_db ? data.config_db.error : "Error";
+      configDbStatus.style.color = "var(--danger)";
+    }
+
+    schemaStatus.textContent = data.schema_initialized ? "OK ✓" : "Missing";
+    schemaStatus.style.color = data.schema_initialized ? "var(--accent)" : "var(--danger)";
+    databaseCount.textContent = String(data.database_count || 0);
+    profileCountEl.textContent = String(data.profile_count || 0);
+  } catch (err) {
+    statusDot.className = "status-dot bad";
+    statusText.textContent = "Connection failed";
+    configDbStatus.textContent = "Error";
+    configDbStatus.style.color = "var(--danger)";
+  }
+}
+
+// --- Databases ---
 function renderDatabaseSelectors(databases) {
   databaseCount.textContent = String(databases.length);
   databasePills.innerHTML = "";
   tokenDbName.innerHTML = "";
   sqlDbName.innerHTML = "";
 
-  if (databases.length === 0) {
-    const pill = document.createElement("span");
-    pill.className = "pill empty";
-    pill.textContent = "No target databases saved";
-    databasePills.appendChild(pill);
-    return;
+  for (const db of databases) {
+    const name = typeof db === "string" ? db : db.db_name;
+    databasePills.innerHTML += `<span class="pill">${escapeHtml(name)}</span>`;
+    tokenDbName.innerHTML += `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`;
+    sqlDbName.innerHTML += `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`;
   }
-
-  for (const database of databases) {
-    const dbName = typeof database === "string" ? database : database.db_name;
-
-    const pill = document.createElement("span");
-    pill.className = "pill";
-    pill.textContent = dbName;
-    databasePills.appendChild(pill);
-
-    const tokenOption = document.createElement("option");
-    tokenOption.value = dbName;
-    tokenOption.textContent = dbName;
-    tokenDbName.appendChild(tokenOption);
-
-    const sqlOption = document.createElement("option");
-    sqlOption.value = dbName;
-    sqlOption.textContent = dbName;
-    sqlDbName.appendChild(sqlOption);
+  if (databases.length === 0) {
+    databasePills.innerHTML = '<span class="pill">None</span>';
   }
 }
 
 function renderManagedDatabases() {
   if (managedDatabases.length === 0) {
-    databaseTable.className = "database-table empty";
-    databaseTable.textContent = "No saved databases yet.";
+    databaseTable.className = "list-empty";
+    databaseTable.textContent = "No databases yet.";
     return;
   }
-
-  databaseTable.className = "database-table";
-  const rows = managedDatabases
-    .map(
-      (database) => `
-        <div class="database-row">
-          <div class="database-main">
-            <strong>${escapeHtml(database.db_name)}</strong>
-            <code>${escapeHtml(database.connection_string)}</code>
-          </div>
-          <div class="database-meta">
-            <span>Updated ${new Date(database.updated_at).toLocaleString()}</span>
-            <div class="button-row">
-              <button class="button ghost small" type="button" data-action="edit" data-db-name="${escapeAttribute(database.db_name)}">Edit</button>
-              <button class="button ghost small" type="button" data-action="delete" data-db-name="${escapeAttribute(database.db_name)}">Delete</button>
-            </div>
-          </div>
+  databaseTable.className = "";
+  databaseTable.innerHTML = managedDatabases.map((db) => `
+    <div class="list-item">
+      <strong>${escapeHtml(db.db_name)}</strong>
+      <code>${escapeHtml(db.connection_string)}</code>
+      <div class="list-meta">
+        <span>${new Date(db.updated_at).toLocaleDateString()}</span>
+        <div class="btn-row">
+          <button class="btn btn-ghost btn-sm" data-action="edit" data-db-name="${escapeAttr(db.db_name)}">Edit</button>
+          <button class="btn btn-ghost btn-sm" data-action="delete" data-db-name="${escapeAttr(db.db_name)}">Del</button>
         </div>
-      `
-    )
-    .join("");
-
-  databaseTable.innerHTML = rows;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function escapeAttribute(value) {
-  return escapeHtml(value).replace(/"/g, "&quot;");
-}
-
-function fillDatabaseForm(database) {
-  databaseForm.elements.db_name.value = database.db_name;
-  databaseForm.elements.connection_string.value = database.connection_string;
-  databaseResult.value = `Loaded ${database.db_name} into form.`;
-}
-
-function clearDatabaseForm() {
-  databaseForm.reset();
-  databaseResult.value = "";
-}
-
-async function loadHealth() {
-  const data = await requestJson("/api/health");
-  healthValue.textContent = data.ok ? "OK" : "DOWN";
-  healthBadge.textContent = data.ok ? "Healthy" : "Down";
-  healthBadge.className = data.ok ? "badge ok" : "badge bad";
+      </div>
+    </div>
+  `).join("");
 }
 
 async function loadManagedDatabases() {
@@ -163,208 +163,120 @@ async function loadManagedDatabases() {
     managedDatabases = [];
     renderManagedDatabases();
     renderDatabaseSelectors([]);
-    databaseResult.value = "Enter admin secret in the Admin Access box first.";
     return;
   }
-
-  const data = await requestJson("/api/managed-databases", {
-    headers: {
-      "x-admin-secret": getAdminSecretValue(),
-    },
-  });
-
-  managedDatabases = data.databases || [];
-  renderManagedDatabases();
-  renderDatabaseSelectors(managedDatabases);
-  await loadHealth();
+  try {
+    const data = await requestJson("/api/managed-databases", {
+      headers: { "x-admin-secret": getAdminSecretValue() },
+    });
+    managedDatabases = data.databases || [];
+    renderManagedDatabases();
+    renderDatabaseSelectors(managedDatabases);
+    renderProfileSelectors(managedDatabases);
+    await loadProfiles();
+  } catch (err) {
+    databaseResult.value = err.message;
+  }
 }
 
+// --- Logs ---
 async function loadLogs() {
   const limit = Number(logLimit.value || 50);
-  const data = await requestJson(`/api/logs?limit=${encodeURIComponent(limit)}`);
-  logsOutput.value = JSON.stringify(data.logs, null, 2);
+  try {
+    const data = await requestJson(`/api/logs?limit=${encodeURIComponent(limit)}`);
+    logsOutput.value = JSON.stringify(data.logs, null, 2);
+  } catch (err) {
+    logsOutput.value = err.message;
+  }
 }
 
-databaseForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
+// --- Database Form ---
+databaseForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
   const body = {
     db_name: databaseForm.elements.db_name.value.trim(),
     connection_string: databaseForm.elements.connection_string.value.trim(),
   };
-
   try {
     const data = await requestJson("/api/managed-databases", {
-      method: "POST",
-      headers: getAdminHeaders(),
-      body: JSON.stringify(body),
+      method: "POST", headers: getAdminHeaders(), body: JSON.stringify(body),
     });
-
     databaseResult.value = JSON.stringify(data, null, 2);
     await loadManagedDatabases();
-    await loadLogs();
-  } catch (error) {
-    databaseResult.value = error.message;
-  }
+    await loadHealth();
+  } catch (err) { databaseResult.value = err.message; }
 });
 
 testDatabaseButton.addEventListener("click", async () => {
-  const body = {
-    connection_string: databaseForm.elements.connection_string.value.trim(),
-  };
-
+  const body = { connection_string: databaseForm.elements.connection_string.value.trim() };
   try {
     const data = await requestJson("/api/managed-databases/test", {
-      method: "POST",
-      headers: getAdminHeaders(),
-      body: JSON.stringify(body),
+      method: "POST", headers: getAdminHeaders(), body: JSON.stringify(body),
     });
-
     databaseResult.value = JSON.stringify(data, null, 2);
-  } catch (error) {
-    databaseResult.value = error.message;
-  }
+  } catch (err) { databaseResult.value = err.message; }
 });
 
-clearDatabaseButton.addEventListener("click", () => {
-  clearDatabaseForm();
-});
+clearDatabaseButton.addEventListener("click", () => { databaseForm.reset(); databaseResult.value = ""; });
 
-databaseTable.addEventListener("click", async (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) {
-    return;
-  }
-
+databaseTable.addEventListener("click", async (e) => {
+  const target = e.target.closest("[data-action]");
+  if (!target) return;
   const action = target.dataset.action;
   const dbName = target.dataset.dbName;
+  const db = managedDatabases.find((d) => d.db_name === dbName);
 
-  if (!action || !dbName) {
+  if (action === "edit" && db) {
+    databaseForm.elements.db_name.value = db.db_name;
+    databaseForm.elements.connection_string.value = db.connection_string;
+    databaseResult.value = `Loaded ${db.db_name}`;
     return;
   }
-
-  const database = managedDatabases.find((item) => item.db_name === dbName);
-
-  if (action === "edit" && database) {
-    fillDatabaseForm(database);
-    return;
-  }
-
   if (action === "delete") {
     try {
-      const data = await requestJson(`/api/managed-databases/${encodeURIComponent(dbName)}`, {
-        method: "DELETE",
-        headers: {
-          "x-admin-secret": adminSecret.value.trim(),
-        },
+      await requestJson(`/api/managed-databases/${encodeURIComponent(dbName)}`, {
+        method: "DELETE", headers: { "x-admin-secret": getAdminSecretValue() },
       });
-
-      databaseResult.value = JSON.stringify(data, null, 2);
+      databaseResult.value = `Deleted ${dbName}`;
       await loadManagedDatabases();
-      await loadLogs();
-    } catch (error) {
-      databaseResult.value = error.message;
-    }
+      await loadHealth();
+    } catch (err) { databaseResult.value = err.message; }
   }
 });
 
-tokenForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const formData = new FormData(tokenForm);
-  const ttlSeconds = formData.get("ttl_seconds");
-  const body = {
-    db_name: formData.get("db_name"),
-    access: formData.get("access"),
-  };
-
-  if (ttlSeconds) {
-    body.ttl_seconds = Number(ttlSeconds);
-  }
+// --- Token ---
+tokenForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(tokenForm);
+  const body = { db_name: fd.get("db_name"), access: fd.get("access") };
+  const ttl = fd.get("ttl_seconds");
+  if (ttl) body.ttl_seconds = Number(ttl);
+  const profile = fd.get("profile_name");
+  if (profile) body.profile_name = profile;
 
   try {
     const data = await requestJson("/api/token", {
-      method: "POST",
-      headers: getAdminHeaders(),
-      body: JSON.stringify(body),
+      method: "POST", headers: getAdminHeaders(), body: JSON.stringify(body),
     });
-
     tokenOutput.value = data.aiConnectionPacket || JSON.stringify(data, null, 2);
     sqlToken.value = data.token;
     sqlDbName.value = data.db_name;
-    await loadLogs();
-  } catch (error) {
-    tokenOutput.value = error.message;
-  }
+  } catch (err) { tokenOutput.value = err.message; }
 });
 
-sqlForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const formData = new FormData(sqlForm);
+// --- SQL ---
+sqlForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(sqlForm);
   let params = [];
-
-  try {
-    params = JSON.parse(formData.get("params") || "[]");
-    if (!Array.isArray(params)) {
-      throw new Error("Params must be a JSON array");
-    }
-  } catch (error) {
-    sqlResult.value = error.message;
-    return;
-  }
+  try { params = JSON.parse(fd.get("params") || "[]"); } catch (err) { sqlResult.value = err.message; return; }
 
   try {
     const data = await requestJson("/api/sql", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${formData.get("token")}`,
-      },
-      body: JSON.stringify({
-        db_name: formData.get("db_name"),
-        sql: formData.get("sql"),
-        params,
-      }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${fd.get("token")}` },
+      body: JSON.stringify({ db_name: fd.get("db_name"), sql: fd.get("sql"), params }),
     });
-
     sqlResult.value = JSON.stringify(data, null, 2);
-    await loadLogs();
-  } catch (error) {
-    sqlResult.value = error.message;
-  }
-});
-
-refreshAllButton.addEventListener("click", async () => {
-  await loadHealth();
-  await loadManagedDatabases();
-  await loadLogs();
-});
-
-refreshDatabasesButton.addEventListener("click", loadManagedDatabases);
-refreshLogsButton.addEventListener("click", loadLogs);
-adminSecret.addEventListener("input", () => {
-  const value = getAdminSecretValue();
-  updateAdminUi();
-
-  if (value) {
-    sessionStorage.setItem(ADMIN_SECRET_STORAGE_KEY, value);
-  } else {
-    sessionStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
-  }
-});
-adminSecret.addEventListener("change", loadManagedDatabases);
-adminSecret.addEventListener("blur", loadManagedDatabases);
-
-const savedAdminSecret = sessionStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
-if (savedAdminSecret) {
-  adminSecret.value = savedAdminSecret;
-}
-updateAdminUi();
-
-Promise.all([loadHealth(), loadLogs()]).catch((error) => {
-  healthValue.textContent = "ERROR";
-  healthBadge.textContent = "Error";
-  healthBadge.className = "badge bad";
-  databaseResult.value = error.message;
+  } catch (err) { sqlResult.value = err.message; }
 });
