@@ -25,6 +25,9 @@ const sqlToken = document.getElementById("sqlToken");
 const sqlResult = document.getElementById("sqlResult");
 const logsOutput = document.getElementById("logsOutput");
 const logLimit = document.getElementById("logLimit");
+const runDbBackupButton = document.getElementById("runDbBackupButton");
+const refreshDbBackupButton = document.getElementById("refreshDbBackupButton");
+const dbBackupResult = document.getElementById("dbBackupResult");
 const refreshAllButton = document.getElementById("refreshAllButton");
 const refreshLogsButton = document.getElementById("refreshLogsButton");
 const tokenProfileName = document.getElementById("tokenProfileName");
@@ -429,6 +432,37 @@ profileTable.addEventListener("click", async (e) => {
     } catch (err) { profileResult.value = err.message; }
   }
 });
+
+// --- DB Backup ---
+let dbBackupPollTimer = null;
+
+async function loadDbBackupStatus() {
+  if (!getAdminSecretValue()) { dbBackupResult.value = "Enter admin secret first."; return; }
+  try {
+    const data = await requestJson("/api/db-backup/status", {
+      headers: { "x-admin-secret": getAdminSecretValue() },
+    });
+    dbBackupResult.value = JSON.stringify(data, null, 2);
+    if (data.status === "running") {
+      if (!dbBackupPollTimer) dbBackupPollTimer = setInterval(loadDbBackupStatus, 3000);
+    } else if (dbBackupPollTimer) {
+      clearInterval(dbBackupPollTimer);
+      dbBackupPollTimer = null;
+    }
+  } catch (err) { dbBackupResult.value = err.message; }
+}
+
+runDbBackupButton.addEventListener("click", async () => {
+  try {
+    const data = await requestJson("/api/db-backup", {
+      method: "POST", headers: getAdminHeaders(),
+    });
+    dbBackupResult.value = JSON.stringify(data, null, 2);
+    if (!dbBackupPollTimer) dbBackupPollTimer = setInterval(loadDbBackupStatus, 3000);
+  } catch (err) { dbBackupResult.value = err.message; }
+});
+
+refreshDbBackupButton.addEventListener("click", loadDbBackupStatus);
 
 // --- Admin Secret & Init ---
 adminSecret.addEventListener("input", () => {

@@ -2,15 +2,19 @@ require("dotenv").config();
 
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const http = require("http");
 const path = require("path");
 const { URL } = require("url");
+const { spawn } = require("child_process");
 const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL;
 const PROXY_ADMIN_SECRET = process.env.PROXY_ADMIN_SECRET;
 const PROXY_SIGNING_SECRET = process.env.PROXY_SIGNING_SECRET;
+const DB_BACKUP_SOURCE_URL = process.env.DATABASE_URL_PROD_MAIN || null;
+const DB_BACKUP_TARGET_URL = process.env.DATABASE_URLPLAYGROUND || null;
 const DEFAULT_PUBLIC_PROXY_BASE_URL = "https://pg-proxy-production.up.railway.app/";
 const DEFAULT_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
   "PROXY_TOKEN_DEFAULT_TTL_SECONDS",
@@ -828,6 +832,117 @@ async function testConnectionString(connectionString) {
   }
 }
 
+// --- DB Backup (Prod Main -> Playground, run inside this app on Railway) ---
+
+const dbBackupState = {
+  status: "idle", // idle | running | success | error
+  startedAt: null,
+  finishedAt: null,
+  durationMs: null,
+  error: null,
+};
+
+let dbBackupRunning = false;
+
+function redactSecrets(text) {
+  if (!text) {
+    return text;
+  }
+
+  return text.replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, "postgres://[redacted]");
+}
+
+function runChildProcess(command, args) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on("error", (error) => {
+      resolve({ code: -1, stdout, stderr: stderr || error.message });
+    });
+
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+async function dumpDatabase(connectionString, filePath) {
+  const args = ["--no-owner", "--no-privileges", "--clean", "--if-exists", "-f", filePath, connectionString];
+  const result = await runChildProcess("pg_dump", args);
+
+  if (result.code !== 0) {
+    throw new Error(`pg_dump failed (exit ${result.code}): ${redactSecrets(result.stderr).slice(0, 2000)}`);
+  }
+}
+
+async function restoreDatabase(connectionString, filePath) {
+  const args = ["-v", "ON_ERROR_STOP=1", "-X", "-q", "-f", filePath, connectionString];
+  const result = await runChildProcess("psql", args);
+
+  if (result.code !== 0) {
+    throw new Error(`psql restore failed (exit ${result.code}): ${redactSecrets(result.stderr).slice(0, 2000)}`);
+  }
+}
+
+async function runDbBackup() {
+  if (dbBackupRunning) {
+    throw new Error("A backup is already running");
+  }
+
+  dbBackupRunning = true;
+  dbBackupState.status = "running";
+  dbBackupState.startedAt = new Date().toISOString();
+  dbBackupState.finishedAt = null;
+  dbBackupState.durationMs = null;
+  dbBackupState.error = null;
+
+  const startedAtMs = Date.now();
+  const dumpFilePath = path.join(os.tmpdir(), `pg-proxy-db-backup-${startedAtMs}.sql`);
+
+  try {
+    if (!DB_BACKUP_SOURCE_URL || !DB_BACKUP_TARGET_URL) {
+      throw new Error("DATABASE_URL_PROD_MAIN and DATABASE_URLPLAYGROUND must both be set");
+    }
+
+    if (DB_BACKUP_SOURCE_URL === DB_BACKUP_TARGET_URL) {
+      throw new Error("Source and target connection strings are identical; refusing to copy a database into itself");
+    }
+
+    await dumpDatabase(DB_BACKUP_SOURCE_URL, dumpFilePath);
+    await restoreDatabase(DB_BACKUP_TARGET_URL, dumpFilePath);
+    dbBackupState.status = "success";
+    appendAccessLog({
+      time: new Date().toISOString(),
+      type: "db_backup_completed",
+      durationMs: Date.now() - startedAtMs,
+    });
+  } catch (error) {
+    dbBackupState.status = "error";
+    dbBackupState.error = redactSecrets(error.message || "Unknown error");
+    appendAccessLog({
+      time: new Date().toISOString(),
+      type: "db_backup_failed",
+      error: dbBackupState.error,
+    });
+    throw error;
+  } finally {
+    dbBackupState.finishedAt = new Date().toISOString();
+    dbBackupState.durationMs = Date.now() - startedAtMs;
+    dbBackupRunning = false;
+    fs.unlink(dumpFilePath, () => {});
+  }
+}
+
 // --- Access Profiles ---
 
 async function listAccessProfiles(dbName) {
@@ -1096,6 +1211,36 @@ async function handleApiRequest(request, response, pathname, requestUrl) {
     json(response, 200, {
       ok: true,
       db_name: dbName,
+    });
+    return true;
+  }
+
+  if (request.method === "POST" && pathname === "/api/db-backup") {
+    requireAdminSecret(request);
+
+    if (dbBackupRunning) {
+      json(response, 409, { error: "A backup is already running", status: dbBackupState.status });
+      return true;
+    }
+
+    if (!DB_BACKUP_SOURCE_URL || !DB_BACKUP_TARGET_URL) {
+      json(response, 400, { error: "DATABASE_URL_PROD_MAIN and DATABASE_URLPLAYGROUND must both be set" });
+      return true;
+    }
+
+    logEvent("db_backup_started", request);
+    runDbBackup().catch(() => {});
+
+    json(response, 202, { ok: true, status: "running" });
+    return true;
+  }
+
+  if (request.method === "GET" && pathname === "/api/db-backup/status") {
+    requireAdminSecret(request);
+
+    json(response, 200, {
+      ...dbBackupState,
+      configured: Boolean(DB_BACKUP_SOURCE_URL && DB_BACKUP_TARGET_URL),
     });
     return true;
   }

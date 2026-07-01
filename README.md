@@ -111,6 +111,27 @@ Recent logs are also available from:
 
 `GET /api/logs?limit=50`
 
+## 7. DB Backup (Prod Main → Playground)
+
+Runs a full schema+data copy from `DATABASE_URL_PROD_MAIN` into `DATABASE_URLPLAYGROUND`, entirely inside this server process (via `pg_dump | psql`), triggered by an admin from the web UI or API. Nothing runs on your local machine.
+
+Required Railway variables (source/target are reference variables to your two Postgres services):
+
+```env
+DATABASE_URL_PROD_MAIN=${{Postgres-PROD.DATABASE_URL}}
+DATABASE_URLPLAYGROUND=${{"POSTGRES Playground".DATABASE_URL}}
+
+# Required so pg_dump/psql exist in the deployed container (Railpack builder):
+RAILPACK_DEPLOY_APT_PACKAGES=postgresql-client
+```
+
+Usage:
+
+- `POST /api/db-backup` (admin secret required) — starts the backup, returns `202` immediately. Rejects with `409` if one is already running, `400` if the two database variables aren't set.
+- `GET /api/db-backup/status` (admin secret required) — poll for `status: idle|running|success|error`, timestamps, duration, and any error message.
+- Or use the "DB Backup" panel in the web UI.
+- This overwrites Playground's contents every run (`pg_dump --clean --if-exists`).
+
 ## Notes
 
 - `DATABASE_URL` is the proxy app database.

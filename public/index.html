@@ -176,6 +176,22 @@
         </div>
       </section>
 
+      <!-- DB Backup -->
+      <section class="panel">
+        <button class="panel-toggle" data-target="dbBackupBody" aria-expanded="false">
+          <span>DB Backup (Prod Main → Playground)</span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="panel-body collapsed" id="dbBackupBody">
+          <p class="hint">Runs on the server. Overwrites the Playground database with a full schema+data copy of Prod Main.</p>
+          <div class="btn-row">
+            <button class="btn" id="runDbBackupButton" type="button">Backup Now</button>
+            <button class="btn btn-ghost" id="refreshDbBackupButton" type="button">Refresh Status</button>
+          </div>
+          <textarea id="dbBackupResult" rows="8" readonly class="output"></textarea>
+        </div>
+      </section>
+
       <!-- Logs -->
       <section class="panel">
         <button class="panel-toggle" data-target="logsBody" aria-expanded="false">
